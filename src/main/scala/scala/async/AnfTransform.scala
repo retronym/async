@@ -105,7 +105,6 @@ private[async] final case class AnfTransform[C <: Context](c: C) {
         case Apply(fun, args) if isAwait(fun) =>
           val valDef = defineVal(name.await, expr, tree.pos)
           stats :+ valDef :+ Ident(valDef.name)
-
         case If(cond, thenp, elsep) =>
           // if type of if-else is Unit don't introduce assignment,
           // but add Unit value to bring it into form expected by async transform

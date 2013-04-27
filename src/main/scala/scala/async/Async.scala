@@ -76,10 +76,10 @@ abstract class AsyncBase {
     //  - if/match only used in statement position.
     val anfTree: Block = {
       val anf = AnfTransform[c.type](c)
-      val restored = utils.restorePatternMatchingFunctions(body.tree)
-      val stats1 :+ expr1 = anf(restored)
+      val stats1 :+ expr1 = anf(body.tree)
       val block = Block(stats1, expr1)
-      c.typeCheck(block).asInstanceOf[Block]
+      val blk = c.typeCheck(block).asInstanceOf[Block]
+      blk
     }
 
     // Analyze the block to find locals that will be accessed from multiple
@@ -103,7 +103,7 @@ abstract class AsyncBase {
       case vd@ValDef(_, _, tpt, _) if renameMap contains vd.symbol                            =>
         utils.mkVarDefTree(tpt.tpe, renameMap(vd.symbol))
       case dd@DefDef(mods, name, tparams, vparamss, tpt, rhs) if renameMap contains dd.symbol =>
-        DefDef(mods, renameMap(dd.symbol), tparams, vparamss, tpt, c.resetAllAttrs(utils.substituteNames(rhs, renameMap)))
+        DefDef(mods, renameMap(dd.symbol), tparams, vparamss, tpt, utils.substituteNames(rhs, renameMap))
     }
 
     val onCompleteHandler = {
@@ -158,8 +158,38 @@ abstract class AsyncBase {
       c.Expr[futureSystem.Fut[T]](tree)
     }
 
-    AsyncUtils.vprintln(s"async state machine transform expands to:\n ${code.tree}")
-    code
+    val checked = c.typeCheck(code.tree)
+    val syms = checked.collect {
+      case vd@ValDef(_, n, _, _) =>
+        try {
+          val getter = vd.symbol.asTerm.getter
+          (getter.name, vd.symbol.asTerm.getter.orElse(vd.symbol))
+        } catch {
+          case _: Throwable /*TODO Cyclic Ref */ => (nme.EMPTY, NoSymbol)
+        }
+      case dd : DefDef =>
+        try {
+          (dd.name, dd.symbol)
+        } catch {
+          case _: Throwable /*TODO Cyclic Ref */ => (nme.EMPTY, NoSymbol)
+        }
+    }.toMap
+//    c.enclosingMethod.symbol.typeSignature.declarations
+//    c.enclosingMethod.symbol.newClassSymbol()
+    checked.foreach {
+      case i@Ident(n) if (i.symbol eq null) || i.symbol == NoSymbol =>
+        syms.get(n) match {
+          case Some(sym) =>
+            val (i1, s1) = (i, sym)
+            i.setSymbol(sym)
+            i.setType(sym.typeSignature)
+          case None      =>
+        }
+      case _          =>
+    }
+
+    AsyncUtils.vprintln(s"async state machine transform expands to:\n ${checked}")
+    c.Expr[futureSystem.Fut[T]](checked)
   }
 
   def logDiagnostics(c: Context)(anfTree: c.Tree, states: Seq[String]) {

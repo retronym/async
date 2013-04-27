@@ -68,20 +68,35 @@ object TreeInterrogation extends App {
 
   withDebug {
     val cm = reflect.runtime.currentMirror
-    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:flatten")
+    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:flatten -Ydebug")
     import scala.async.Async._
     val tree = tb.parse(
       """ import _root_.scala.async.AsyncId.{async, await}
-        | def foo[T](a0: Int)(b0: Int*) = s"a0 = $a0, b0 = ${b0.head}"
-        | val res = async {
-        |   var i = 0
-        |   def get = async {i += 1; i}
-        |   foo[Int](await(get))(await(get) :: Nil : _*)
+        | //def call: Future[String] = ???
+        | // type `Seq[_]` = Seq[_]
+        | // def m7(a: Any) = async {
+        | //   null.asInstanceOf[Seq[_]]
+        | //   a match {
+        | //     case s: Seq[_] =>
+        | //       await(async(s))
+        | //   }
+        | //   Nil collect { case x => x.toString }
+        | // }
+        |
+        | val result = async {
+        |   val a = 0
+        |   val x = await(a) - 1
+        |   val local = 43
+        |   def bar(d: Double) = -d + a + local
+        |   def foo(z: Any) = (a.toDouble, bar(x).toDouble, z)
+        |   foo(await(2))
         | }
-        | res
+        |
+        | ()
         | """.stripMargin)
     println(tree)
     val tree1 = tb.typeCheck(tree.duplicate)
+    Console.err.flush()
     println(cm.universe.show(tree1))
     println(tb.eval(tree))
   }

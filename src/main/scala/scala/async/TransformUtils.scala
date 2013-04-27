@@ -31,6 +31,10 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
     val ifRes         = "ifres"
     val await         = "await"
     val bindSuffix    = "$bind"
+    def isAnfName(name: TermName) = (
+      name.toString.startsWith(matchRes + "$")
+      || name.toString.startsWith(ifRes + "$")
+    )
 
     def fresh(name: TermName): TermName = newTermName(fresh(name.toString))
 
@@ -221,102 +225,6 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
     for (att <- orig.attachments.all)
       tree.updateAttachment[Any](att)(ClassTag.apply[Any](att.getClass))
     tree
-  }
-
-  def resetInternalAttrs(tree: Tree, internalSyms: List[Symbol]) =
-    new ResetInternalAttrs(internalSyms.toSet).transform(tree)
-
-  /**
-   * Adaptation of [[scala.reflect.internal.Trees.ResetAttrs]]
-   *
-   * A transformer which resets symbol and tpe fields of all nodes in a given tree,
-   * with special treatment of:
-   * `TypeTree` nodes: are replaced by their original if it exists, otherwise tpe field is reset
-   * to empty if it started out empty or refers to local symbols (which are erased).
-   * `TypeApply` nodes: are deleted if type arguments end up reverted to empty
-   *
-   * `This` and `Ident` nodes referring to an external symbol are ''not'' reset.
-   */
-  private final class ResetInternalAttrs(internalSyms: Set[Symbol]) extends Transformer {
-
-    import language.existentials
-
-    override def transform(tree: Tree): Tree = trace("reset", tree) {super.transform {
-      def isExternal = tree.symbol != NoSymbol && !internalSyms(tree.symbol)
-
-      tree match {
-        case tpt: TypeTree                         => resetTypeTree(tpt)
-        case TypeApply(fn, args)
-          if args map transform exists (_.isEmpty) => transform(fn)
-        case EmptyTree                             => tree
-        case (_: Ident | _: This) if isExternal    => tree // #35 Don't reset the symbol of Ident/This bound outside of the async block
-        case _                                     => resetTree(tree)
-      }
-    }}
-
-    private def resetTypeTree(tpt: TypeTree): Tree = {
-      if (tpt.original != null)
-        transform(tpt.original)
-      else if (tpt.tpe != null && tpt.asInstanceOf[symtab.TypeTree forSome {val symtab: reflect.internal.SymbolTable}].wasEmpty) {
-        val dupl = tpt.duplicate
-        dupl.tpe = null
-        dupl
-      }
-      else tpt
-    }
-
-    private def resetTree(tree: Tree): Tree = {
-      val hasSymbol: Boolean = {
-        val reflectInternalTree = tree.asInstanceOf[symtab.Tree forSome {val symtab: reflect.internal.SymbolTable}]
-        reflectInternalTree.hasSymbol
-      }
-      val dupl = tree.duplicate
-      if (hasSymbol)
-        dupl.symbol = NoSymbol
-      dupl.tpe = null
-      dupl
-    }
-  }
-
-  /**
-   * Replaces expressions of the form `{ new $anon extends PartialFunction[A, B] { ... ; def applyOrElse[..](...) = ... match <cases> }`
-   * with `Match(EmptyTree, cases`.
-   *
-   * This reverses the transformation performed in `Typers`, and works around non-idempotency of typechecking such trees.
-   */
-  // TODO Reference JIRA issue.
-  final def restorePatternMatchingFunctions(tree: Tree) =
-    RestorePatternMatchingFunctions transform tree
-
-  private object RestorePatternMatchingFunctions extends Transformer {
-
-    import language.existentials
-    val DefaultCaseName: TermName = "defaultCase$"
-
-    override def transform(tree: Tree): Tree = {
-      val SYNTHETIC = (1 << 21).toLong.asInstanceOf[FlagSet]
-      def isSynthetic(cd: ClassDef) = cd.mods hasFlag SYNTHETIC
-
-      /** Is this pattern node a synthetic catch-all case, added during PartialFuction synthesis before we know
-        * whether the user provided cases are exhaustive. */
-      def isSyntheticDefaultCase(cdef: CaseDef) = cdef match {
-        case CaseDef(Bind(DefaultCaseName, _), EmptyTree, _) => true
-        case _                                                => false
-      }
-      tree match {
-        case Block(
-        (cd@ClassDef(_, _, _, Template(_, _, body))) :: Nil,
-        Apply(Select(New(a), nme.CONSTRUCTOR), Nil)) if isSynthetic(cd) =>
-          val restored = (body collectFirst {
-            case DefDef(_, /*name.apply | */ name.applyOrElse, _, _, _, Match(_, cases)) =>
-              val nonSyntheticCases = cases.takeWhile(cdef => !isSyntheticDefaultCase(cdef))
-              val transformedCases = super.transformStats(nonSyntheticCases, currentOwner).asInstanceOf[List[CaseDef]]
-              Match(EmptyTree, transformedCases)
-          }).getOrElse(c.abort(tree.pos, s"Internal Error: Unable to find original pattern matching cases in: $body"))
-          restored
-        case t                                                          => super.transform(t)
-      }
-    }
   }
 
   def isSafeToInline(tree: Tree) = {

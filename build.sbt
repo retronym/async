@@ -1,7 +1,7 @@
 scalaVersion := "2.10.1"
 
 // Uncomment to test with a locally built copy of Scala.
-// scalaHome := Some(file("/code/scala2/build/pack"))
+scalaHome := Some(file("/code/scala2/build/pack"))
 
 organization := "org.typesafe.async" // TODO new org name under scala-lang.
 
