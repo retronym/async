@@ -8,8 +8,8 @@ version := "1.0.0-SNAPSHOT"
 
 libraryDependencies <++= (scalaVersion) {
   sv => Seq(
-    "org.scala-lang" % "scala-reflect" % sv,
-    "org.scala-lang" % "scala-compiler" % sv % "test"
+    "org.scala-lang" % "scala-reflect" % sv % "provided",
+    "org.scala-lang" % "scala-compiler" % sv % "provided"
   )
 }
 
