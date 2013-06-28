@@ -7,6 +7,7 @@ package scala.async
 import scala.language.experimental.macros
 import scala.reflect.macros.Context
 import scala.reflect.internal.annotations.compileTimeOnly
+import scala.tools.nsc.Global
 
 object Async extends AsyncBase {
 
@@ -18,6 +19,22 @@ object Async extends AsyncBase {
   def async[T](body: T) = macro asyncImpl[T]
 
   override def asyncImpl[T: c.WeakTypeTag](c: Context)(body: c.Expr[T]): c.Expr[Future[T]] = super.asyncImpl[T](c)(body)
+
+  def anf[T](body: T) = macro anfImpl[T]
+  def anfImpl[T: c.WeakTypeTag](c: Context)(body: c.Expr[T]): c.Expr[T] = {
+    def powerMode(c: Context) = {
+      c.asInstanceOf[c.type {val universe: Global; val callsiteTyper: universe.analyzer.Typer}]
+    }
+    val powerContext = powerMode(c)
+    val ayncMacro = new AsyncMacro {
+      val global: powerContext.universe.type = powerContext.universe
+      val callSiteTyper: global.analyzer.Typer = powerContext.callsiteTyper
+    }
+    val stats :+ expr = ayncMacro.anfTransform(body.tree.asInstanceOf[powerContext.Tree])
+    import c.universe._
+    val block = Block(stats.asInstanceOf[List[Tree]], expr.asInstanceOf[Tree])
+    c.Expr[T](c.typeCheck(block))
+  }
 }
 
 object AsyncId extends AsyncBase {

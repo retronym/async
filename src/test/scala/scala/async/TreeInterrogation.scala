@@ -71,11 +71,11 @@ object TreeInterrogation extends App {
     val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:flatten")
     import scala.async.Async._
     val tree = tb.parse(
-      """ import _root_.scala.async.AsyncId.{async, await}
+      """ import _root_.scala.async.Async.{async, await, anf}, scala.concurrent.Future
         | def foo[T](a0: Int)(b0: Int*) = s"a0 = $a0, b0 = ${b0.head}"
-        | val res = async {
+        | val res = anf {
         |   var i = 0
-        |   def get = async {i += 1; i}
+        |   def get: Future[Int] = ???
         |   foo[Int](await(get))(await(get) :: Nil : _*)
         | }
         | res
@@ -83,6 +83,6 @@ object TreeInterrogation extends App {
     println(tree)
     val tree1 = tb.typeCheck(tree.duplicate)
     println(cm.universe.show(tree1))
-    println(tb.eval(tree))
+    //println(tb.eval(tree))
   }
 }
