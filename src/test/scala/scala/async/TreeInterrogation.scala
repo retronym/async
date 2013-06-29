@@ -70,7 +70,7 @@ object TreeInterrogation extends App {
 
   withDebug {
     val cm = reflect.runtime.currentMirror
-    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:typer")
+    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:typer -uniqid")
     import scala.async.{Async, AsyncId}
 
     val tree = tb.parse(

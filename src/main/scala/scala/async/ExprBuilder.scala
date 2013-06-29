@@ -63,7 +63,7 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     * handler will unconditionally transition to `nestState`.``
     */
   final class AsyncStateWithAwait(val stats: List[c.Tree], val state: Int, nextState: Int,
-                                  awaitable: Awaitable, symLookup: SymLookup)
+                                  val awaitable: Awaitable, symLookup: SymLookup)
     extends AsyncState {
 
     override def mkHandlerCaseForState: CaseDef = {
@@ -220,17 +220,12 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     // populate asyncStates
     for (stat <- stats) stat match {
       // the val name = await(..) pattern
-      case ValDef(mods, name, tpt, Apply(fun, arg :: Nil)) if isAwait(fun) =>
+      case vd @ ValDef(mods, name, tpt, Apply(fun, arg :: Nil)) if isAwait(fun) =>
         val afterAwaitState = nextState()
-        val awaitable = Awaitable(arg, stat.symbol, tpt.tpe)
+        val awaitable = Awaitable(arg, stat.symbol, tpt.tpe, vd)
         asyncStates += stateBuilder.resultWithAwait(awaitable, afterAwaitState, symLookup) // complete with await
         currState = afterAwaitState
         stateBuilder = new AsyncStateBuilder(currState, symLookup)
-
-      case ValDef(mods, name, tpt, rhs) if symLookup.toRename contains stat.symbol =>
-        checkForUnsupportedAwait(rhs)
-        val assign = Assign(Ident(symLookup.toRename(stat.symbol)), rhs)
-        stateBuilder += assign
 
       case If(cond, thenp, elsep) if stat exists isAwait =>
         checkForUnsupportedAwait(cond)
@@ -299,7 +294,7 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     def resumeFunTree[T]: DefDef
   }
 
-  case class SymLookup(toRename: Map[Symbol, Symbol], stateMachineClass: Symbol, applyTrParam: Symbol)
+  case class SymLookup(stateMachineClass: Symbol, applyTrParam: Symbol)
 
   def build(block: Block, symLookup: SymLookup): AsyncBlock = {
     val Block(stats, expr) = block
@@ -377,7 +372,7 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     case _                                    => false
   }
 
-  private final case class Awaitable(expr: Tree, resultName: Symbol, resultType: Type)
+  final case class Awaitable(expr: Tree, resultName: Symbol, resultType: Type, resultValDef: ValDef)
 
   private val internalSyms = origTree.collect {
     case dt: DefTree => dt.symbol

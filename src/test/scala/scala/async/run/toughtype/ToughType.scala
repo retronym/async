@@ -67,4 +67,16 @@ class ToughTypeSpec {
       await(f(2))
     } mustBe 3
   }
+
+  @Test def nestedCaseClassAndModuleAllowed() {
+    import AsyncId.{await, async}
+    async {
+      case class Person(name: String)
+      val fut = async { "bob" }
+      //object O
+      val x = Person(await(fut))
+//      O.toString
+      x.name
+    } mustBe "bob"
+  }
 }

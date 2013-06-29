@@ -159,14 +159,56 @@ abstract class AsyncBase {
       }
       val t = ClassDef(NoMods, name.stateMachineT, Nil, template)
       c.typeCheck(Block(t :: Nil, Literal(Constant(()))))
+      val negs = t.collect {
+        case s : SymTree if s.symbol.name.toString.startsWith("neg") => s
+      }.distinct
       t
     }
 
-    lazy val origSymsToNewSyms: Map[Symbol, Symbol] = origSymbolsToLocalVarTrees.mapValues(_.symbol).toMap
+    val origSymsToNewSyms: Map[Symbol, Symbol] = origSymbolsToLocalVarTrees.mapValues(_.symbol).toMap
+    val (from, to) = origSymsToNewSyms.toList.unzip
 
-    val asyncBlock: builder.AsyncBlock = builder.build(anfTree, new builder.SymLookup(origSymsToNewSyms, stateMachine.symbol, applyDefDefDummyBody.vparamss.head.head.symbol))
-    import asyncBlock.asyncStates
-    logDiagnostics(c)(anfTree, asyncStates.map(_.toString))
+    val asyncBlock: builder.AsyncBlock = builder.build(anfTree.substituteSymbols(from, to).asInstanceOf[Block], new builder.SymLookup(stateMachine.symbol, applyDefDefDummyBody.vparamss.head.head.symbol))
+
+    logDiagnostics(c)(anfTree, asyncBlock.asyncStates.map(_.toString))
+    val liftable = collection.mutable.Set[Symbol]()
+    val allStats = asyncBlock.asyncStates.flatMap(asyncState => asyncState.stats)
+
+    val defs0: Map[Tree, Int] = asyncBlock.asyncStates.flatMap {
+      asyncState =>
+        val awaits = asyncState match {
+          case stateWithAwait: builder.AsyncStateWithAwait =>
+            stateWithAwait.awaitable.resultValDef :: Nil
+          case _ => Seq()
+        }
+        val defs = asyncState.stats.collect {
+          case dt: DefTree => dt
+        }
+        (awaits ++ defs).map((_, asyncState.state))
+    }.toMap
+    val defMap: Map[Symbol, Int] = defs0.map { case (k, v) => (k.symbol, v) }
+    val defMap1: Map[Symbol, Tree] = defs0.map { case (k, v) => (k.symbol, k) }
+    val defRefs = defs0.keys.map {
+      case tree => (tree.symbol, tree.collect { case rt: RefTree if defMap.contains(rt.symbol) => rt.symbol })
+    }.toList
+    val statementRefs: Map[Symbol, Int] = asyncBlock.asyncStates.flatMap(asyncState => asyncState.stats.filterNot(_.isDef).flatMap (_.collect { case rt: RefTree => (rt.symbol, asyncState.state) })).toMap
+    def used(otherThan: Int, sym: Symbol, seen: Set[Symbol]): Boolean = {
+      def usedInStatement = statementRefs.exists {
+        case (`sym`, stateId) if stateId != otherThan => true
+        case _ => false
+      }
+      def usedInDef = defRefs.exists {
+        case (`sym`, stateId) if stateId != otherThan => true
+        case (sym, _) if !seen(sym) => used(otherThan, sym, seen + sym)
+        case _ => false
+      }
+      usedInStatement || usedInDef
+    }
+    val liftables = defMap.collect {
+      case (sym, ownStateId) if used(ownStateId, sym, Set()) => defMap1(sym)
+    }.toList
+    println(s"defMap = $defMap\ndefRefs = $defRefs\nstatementRefs = $statementRefs\nliftables = ${liftables.map(_.symbol)}")
+    ""
 
     val applyBody = asyncBlock.onCompleteHandler
     val resumeFunTree = asyncBlock.resumeFunTree[T]
@@ -174,12 +216,12 @@ abstract class AsyncBase {
     def uncastTree(t: asyncMacro.global.Tree): Tree = t.asInstanceOf[Tree]
     def castMap(t: Map[Symbol, Symbol]) = t.asInstanceOf[Map[asyncMacro.global.Symbol, asyncMacro.global.Symbol]]
 
-    lazy val stateMachineFixedUp = uncastTree(asyncMacro.spliceMethodBodies(castTree(stateMachine), castTree(applyBody), castTree(resumeFunTree.rhs), castMap(origSymsToNewSyms)))
+    lazy val stateMachineFixedUp = uncastTree(asyncMacro.spliceMethodBodies(liftables.asInstanceOf[List[asyncMacro.global.Tree]], castTree(stateMachine), castTree(applyBody), castTree(resumeFunTree.rhs), castMap(origSymsToNewSyms)))
 
     def selectStateMachine(selection: TermName) = Select(Ident(name.stateMachine), selection)
 
     val code: c.Expr[futureSystem.Fut[T]] = {
-      val isSimple = asyncStates.size == 1
+      val isSimple = asyncBlock.asyncStates.size == 1
       val tree =
         if (isSimple)
           Block(Nil, futureSystemOps.spawn(body.tree)) // generate lean code for the simple case of `async { 1 + 1 }`

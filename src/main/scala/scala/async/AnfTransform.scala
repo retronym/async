@@ -31,7 +31,8 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
     trans.transform(tree)
   }
 
-  def spliceMethodBodies(tree: Tree, applyBody: Tree, resumeBody: Tree, lifted: Map[Symbol, Symbol]): Tree = {
+  def spliceMethodBodies(liftables: List[Tree], tree: Tree, applyBody: Tree,
+                         resumeBody: Tree, lifted: Map[Symbol, Symbol]): Tree = {
     lifted.values.foreach(tree.symbol.info.decls.enter)
     val stateMachineClass = tree.symbol
 

@@ -45,18 +45,11 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
 
     override def nestedClass(classDef: ClassDef) {
       val kind = if (classDef.symbol.asClass.isTrait) "trait" else "class"
-      if (!reportUnsupportedAwait(classDef, s"nested $kind")) {
-        // do not allow local class definitions, because of SI-5467 (specific to case classes, though)
-        if (classDef.symbol.asClass.isCaseClass)
-          c.error(classDef.pos, s"Local case class ${classDef.name.decoded} illegal within `async` block")
-      }
+      reportUnsupportedAwait(classDef, s"nested $kind")
     }
 
     override def nestedModule(module: ModuleDef) {
-      if (!reportUnsupportedAwait(module, "nested object")) {
-        // local object definitions lead to spurious type errors (because of resetAllAttrs?)
-        c.error(module.pos, s"Local object ${module.name.decoded} illegal within `async` block")
-      }
+      reportUnsupportedAwait(module, "nested object")
     }
 
     override def nestedMethod(module: DefDef) {
