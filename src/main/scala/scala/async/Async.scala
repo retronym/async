@@ -142,7 +142,7 @@ abstract class AsyncBase {
 
     lazy val stateMachine: ClassDef = {
       val body: List[Tree] = {
-        val stateVar = ValDef(Modifiers(Flag.MUTABLE), name.state, TypeTree(definitions.IntTpe), Literal(Constant(0)))
+        val stateVar = ValDef(Modifiers(Flag.MUTABLE | Flag.PRIVATE | Flag.LOCAL), name.state, TypeTree(definitions.IntTpe), Literal(Constant(0)))
         val result = ValDef(NoMods, name.result, TypeTree(futureSystemOps.promType[T]), futureSystemOps.createProm[T].tree)
         val execContext = ValDef(NoMods, name.execContext, TypeTree(), futureSystemOps.execContext.tree)
 

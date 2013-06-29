@@ -134,6 +134,14 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
       markReferencedVals(tree)
     }
 
+    override def nestedClass(classDef: ClassDef) {
+      markReferencedVals(classDef)
+    }
+
+    override def nestedModule(module: ModuleDef) {
+      markReferencedVals(module)
+    }
+
     private def markReferencedVals(tree: Tree) {
       tree foreach {
         case rt: RefTree =>
