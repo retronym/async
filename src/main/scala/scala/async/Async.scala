@@ -8,6 +8,7 @@ import scala.language.experimental.macros
 import scala.reflect.macros.Context
 import scala.reflect.internal.annotations.compileTimeOnly
 import scala.tools.nsc.Global
+import language.reflectiveCalls
 
 object Async extends AsyncBase {
 
@@ -19,22 +20,6 @@ object Async extends AsyncBase {
   def async[T](body: T) = macro asyncImpl[T]
 
   override def asyncImpl[T: c.WeakTypeTag](c: Context)(body: c.Expr[T]): c.Expr[Future[T]] = super.asyncImpl[T](c)(body)
-
-  def anf[T](body: T) = macro anfImpl[T]
-  def anfImpl[T: c.WeakTypeTag](c: Context)(body: c.Expr[T]): c.Expr[T] = {
-    def powerMode(c: Context) = {
-      c.asInstanceOf[c.type {val universe: Global; val callsiteTyper: universe.analyzer.Typer}]
-    }
-    val powerContext = powerMode(c)
-    val ayncMacro = new AsyncMacro {
-      val global: powerContext.universe.type = powerContext.universe
-      val callSiteTyper: global.analyzer.Typer = powerContext.callsiteTyper
-    }
-    val stats :+ expr = ayncMacro.anfTransform(body.tree.asInstanceOf[powerContext.Tree])
-    import c.universe._
-    val block = Block(stats.asInstanceOf[List[Tree]], expr.asInstanceOf[Tree])
-    c.Expr[T](c.typeCheck(block))
-  }
 }
 
 object AsyncId extends AsyncBase {
@@ -88,16 +73,31 @@ abstract class AsyncBase {
 
     analyzer.reportUnsupportedAwaits(body.tree)
 
+    def powerMode(c: Context) = {
+      c.asInstanceOf[c.type {val universe: Global; val callsiteTyper: universe.analyzer.Typer}]
+    }
+    val powerContext = powerMode(c)
+    val asyncMacro = new AsyncMacro {
+      val global       : powerContext.universe.type = powerContext.universe
+      val callSiteTyper: global.analyzer.Typer      = powerContext.callsiteTyper
+    }
+
+    val anfTree: Block = {
+      val stats :+ expr = asyncMacro.anfTransform(body.tree.asInstanceOf[powerContext.Tree])
+      val block = Block(stats.asInstanceOf[List[Tree]], expr.asInstanceOf[Tree])
+      c.typeCheck(block).asInstanceOf[Block]
+    }
+
     // Transform to A-normal form:
     //  - no await calls in qualifiers or arguments,
     //  - if/match only used in statement position.
-    val anfTree: Block = {
-      val anf = AnfTransform[c.type](c)
-      val restored = utils.restorePatternMatchingFunctions(body.tree)
-      val stats1 :+ expr1 = anf(restored)
-      val block = Block(stats1, expr1)
-      c.typeCheck(block).asInstanceOf[Block]
-    }
+//    val anfTree: Block = {
+//      val anf = AnfTransform[c.type](c)
+//      val restored = utils.restorePatternMatchingFunctions(body.tree)
+//      val stats1 :+ expr1 = anf(restored)
+//      val block = Block(stats1, expr1)
+//      c.typeCheck(block).asInstanceOf[Block]
+//    }
 
     // Analyze the block to find locals that will be accessed from multiple
     // states of our generated state machine, e.g. a value assigned before
@@ -111,51 +111,70 @@ abstract class AsyncBase {
 
     val builder = ExprBuilder[c.type, futureSystem.type](c, self.futureSystem, anfTree)
     import builder.futureSystemOps
-    val asyncBlock: builder.AsyncBlock = builder.build(anfTree, renameMap)
-    import asyncBlock.asyncStates
-    logDiagnostics(c)(anfTree, asyncStates.map(_.toString))
 
     // Important to retain the original declaration order here!
-    val localVarTrees = anfTree.collect {
-      case vd@ValDef(_, _, tpt, _) if renameMap contains vd.symbol                            =>
-        utils.mkVarDefTree(tpt.tpe, renameMap(vd.symbol))
+    val origSymbolsToLocalVarTrees = collection.mutable.Map[Symbol, Tree]()
+    val liftedMembers = anfTree.collect {
+      case vd@ValDef(_, _, tpt, rhs) if renameMap contains vd.symbol                            =>
+        import reflect.internal.Flags._
+        vd.symbol.asInstanceOf[asyncMacro.global.Symbol].setFlag(MUTABLE | STABLE | PRIVATE | LOCAL)
+        vd.symbol.asInstanceOf[asyncMacro.global.Symbol].name = renameMap(vd.symbol).asInstanceOf[asyncMacro.global.Name]
+        val t = ValDef(vd.symbol, asyncMacro.global.gen.mkZero(vd.symbol.typeSignature.asInstanceOf[asyncMacro.global.Type]).asInstanceOf[Tree])
+        origSymbolsToLocalVarTrees(vd.symbol) = t
+        t
       case dd@DefDef(mods, name, tparams, vparamss, tpt, rhs) if renameMap contains dd.symbol =>
-        DefDef(mods, renameMap(dd.symbol), tparams, vparamss, tpt, c.resetAllAttrs(utils.substituteNames(rhs, renameMap)))
+        import reflect.internal.Flags._
+        dd.symbol.asInstanceOf[asyncMacro.global.Symbol].setFlag(PRIVATE | LOCAL)
+        dd.symbol.asInstanceOf[asyncMacro.global.Symbol].name = renameMap(dd.symbol).asInstanceOf[asyncMacro.global.Name]
+        val t= DefDef(dd.symbol, rhs)
+        origSymbolsToLocalVarTrees(dd.symbol) = t
+        t
     }
 
-    val onCompleteHandler = {
-      Function(
-        List(ValDef(Modifiers(Flag.PARAM), name.tr, TypeTree(defn.TryAnyType), EmptyTree)),
-        asyncBlock.onCompleteHandler)
-    }
-    val resumeFunTree = asyncBlock.resumeFunTree[T]
+    lazy val resumeFunTreeDummyBody = DefDef(Modifiers(), name.resume, Nil, List(Nil), Ident(definitions.UnitClass), Literal(Constant(())))
 
-    val stateMachineType = utils.applied("scala.async.StateMachine", List(futureSystemOps.promType[T], futureSystemOps.execContextType))
+    lazy val applyDefDefDummyBody: DefDef = {
+      val applyVParamss = List(List(ValDef(Modifiers(Flag.PARAM), name.tr, TypeTree(defn.TryAnyType), EmptyTree)))
+      DefDef(NoMods, name.apply, Nil, applyVParamss, TypeTree(definitions.UnitTpe), Literal(Constant(())))
+    }
+
+    lazy val stateMachineType = utils.applied("scala.async.StateMachine", List(futureSystemOps.promType[T], futureSystemOps.execContextType))
 
     lazy val stateMachine: ClassDef = {
       val body: List[Tree] = {
         val stateVar = ValDef(Modifiers(Flag.MUTABLE), name.state, TypeTree(definitions.IntTpe), Literal(Constant(0)))
         val result = ValDef(NoMods, name.result, TypeTree(futureSystemOps.promType[T]), futureSystemOps.createProm[T].tree)
         val execContext = ValDef(NoMods, name.execContext, TypeTree(), futureSystemOps.execContext.tree)
-        val applyDefDef: DefDef = {
-          val applyVParamss = List(List(ValDef(Modifiers(Flag.PARAM), name.tr, TypeTree(defn.TryAnyType), EmptyTree)))
-          val applyBody = asyncBlock.onCompleteHandler
-          DefDef(NoMods, name.apply, Nil, applyVParamss, TypeTree(definitions.UnitTpe), applyBody)
-        }
+
         val apply0DefDef: DefDef = {
           // We extend () => Unit so we can pass this class as the by-name argument to `Future.apply`.
           // See SI-1247 for the the optimization that avoids creatio
           val applyVParamss = List(List(ValDef(Modifiers(Flag.PARAM), name.tr, TypeTree(defn.TryAnyType), EmptyTree)))
-          val applyBody = asyncBlock.onCompleteHandler
           DefDef(NoMods, name.apply, Nil, Nil, TypeTree(definitions.UnitTpe), Apply(Ident(name.resume), Nil))
         }
-        List(utils.emptyConstructor, stateVar, result, execContext) ++ localVarTrees ++ List(resumeFunTree, applyDefDef, apply0DefDef)
+        List(utils.emptyConstructor, stateVar, result, execContext) ++ liftedMembers ++ List(resumeFunTreeDummyBody, applyDefDefDummyBody, apply0DefDef)
       }
       val template = {
         Template(List(stateMachineType), emptyValDef, body)
       }
-      ClassDef(NoMods, name.stateMachineT, Nil, template)
+      val t = ClassDef(NoMods, name.stateMachineT, Nil, template)
+      c.typeCheck(Block(t :: Nil, Literal(Constant(()))))
+      t
     }
+
+    lazy val origSymsToNewSyms: Map[Symbol, Symbol] = origSymbolsToLocalVarTrees.mapValues(_.symbol).toMap
+
+    val asyncBlock: builder.AsyncBlock = builder.build(anfTree, new builder.SymLookup(origSymsToNewSyms, stateMachine.symbol, applyDefDefDummyBody.vparamss.head.head.symbol))
+    import asyncBlock.asyncStates
+    logDiagnostics(c)(anfTree, asyncStates.map(_.toString))
+
+    val applyBody = asyncBlock.onCompleteHandler
+    val resumeFunTree = asyncBlock.resumeFunTree[T]
+    def castTree(t: Tree) = t.asInstanceOf[asyncMacro.global.Tree]
+    def uncastTree(t: asyncMacro.global.Tree): Tree = t.asInstanceOf[Tree]
+    def castMap(t: Map[Symbol, Symbol]) = t.asInstanceOf[Map[asyncMacro.global.Symbol, asyncMacro.global.Symbol]]
+
+    lazy val stateMachineFixedUp = uncastTree(asyncMacro.spliceMethodBodies(castTree(stateMachine), castTree(applyBody), castTree(resumeFunTree.rhs), castMap(origSymsToNewSyms)))
 
     def selectStateMachine(selection: TermName) = Select(Ident(name.stateMachine), selection)
 
@@ -166,8 +185,8 @@ abstract class AsyncBase {
           Block(Nil, futureSystemOps.spawn(body.tree)) // generate lean code for the simple case of `async { 1 + 1 }`
         else {
           Block(List[Tree](
-            stateMachine,
-            ValDef(NoMods, name.stateMachine, stateMachineType, Apply(Select(New(Ident(name.stateMachineT)), nme.CONSTRUCTOR), Nil)),
+            stateMachineFixedUp,
+            ValDef(NoMods, name.stateMachine, stateMachineType, Apply(Select(New(Ident(stateMachine.symbol)), nme.CONSTRUCTOR), Nil)),
             futureSystemOps.spawn(Apply(selectStateMachine(name.apply), Nil))
           ),
           futureSystemOps.promiseToFuture(c.Expr[futureSystem.Prom[T]](selectStateMachine(name.result))).tree)
@@ -176,7 +195,7 @@ abstract class AsyncBase {
     }
 
     AsyncUtils.vprintln(s"async state machine transform expands to:\n ${code.tree}")
-    code
+    c.Expr[futureSystem.Fut[T]](code.tree)
   }
 
   def logDiagnostics(c: Context)(anfTree: c.Tree, states: Seq[String]) {

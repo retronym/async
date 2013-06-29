@@ -232,13 +232,25 @@ class AnfTransformSpec {
   }
 
   @Test
-  def awaitInNonPrimaryParamSection1() {
+  def noAwaitInNonPrimaryParamSection1() {
     import _root_.scala.async.AsyncId.{async, await}
     def foo(a0: Int)(b0: Int) = s"a0 = $a0, b0 = $b0"
     val res = async {
       var i = 0
       def get = {i += 1; i}
       foo(get)(get)
+    }
+    res mustBe "a0 = 1, b0 = 2"
+  }
+
+  @Test
+  def awaitInNonPrimaryParamSection1() {
+    import _root_.scala.async.AsyncId.{async, await}
+    def foo(a0: Int)(b0: Int) = s"a0 = $a0, b0 = $b0"
+    val res = async {
+      var i = 0
+      def get = {i += 1; i}
+      foo(get)(await(get))
     }
     res mustBe "a0 = 1, b0 = 2"
   }

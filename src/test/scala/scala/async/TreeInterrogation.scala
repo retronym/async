@@ -68,21 +68,23 @@ object TreeInterrogation extends App {
 
   withDebug {
     val cm = reflect.runtime.currentMirror
-    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:flatten")
-    import scala.async.Async._
+    val tb = mkToolbox("-cp target/scala-2.10/classes -Xprint:all -uniqid")
+    import scala.async.{Async, AsyncId}
+
     val tree = tb.parse(
-      """ import _root_.scala.async.Async.{async, await, anf}, scala.concurrent.Future
-        | def foo[T](a0: Int)(b0: Int*) = s"a0 = $a0, b0 = ${b0.head}"
-        | val res = anf {
-        |   var i = 0
-        |   def get: Future[Int] = ???
-        |   foo[Int](await(get))(await(get) :: Nil : _*)
-        | }
-        | res
+      """
+        |   import scala.async.AsyncId.{await, async}
+        |   async {
+        |     await(1)
+        |     val a = await(1)
+        |     val f = { case x => x + a }: PartialFunction[Int, Int]
+        |     await(f(2))
+        |   }
+        |
         | """.stripMargin)
     println(tree)
     val tree1 = tb.typeCheck(tree.duplicate)
     println(cm.universe.show(tree1))
-    //println(tb.eval(tree))
+    println(tb.eval(tree))
   }
 }

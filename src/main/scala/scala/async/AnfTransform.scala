@@ -252,7 +252,7 @@ private[async] final case class AnfTransform[C <: Context](c: C) {
                   val vd = ValDef(NoMods, newName, TypeTree(), Ident(b.symbol))
                   (vd, (b.symbol, newName))
               }).unzip
-              val Block(stats1, expr1) = utils.substituteNames(block, mappings.toMap).asInstanceOf[Block]
+              val Block(stats1, expr1) = utils.substituteNames(block, ???).asInstanceOf[Block]
               attachCopy(tree)(CaseDef(pat, guard, Block(valDefs ++ stats1, expr1)))
           }
           // Refer to comments the translation of `If` above.
