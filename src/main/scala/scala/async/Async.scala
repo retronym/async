@@ -91,7 +91,7 @@ abstract class AsyncBase {
       c.typeCheck(block).asInstanceOf[Block]
     }
 
-    val builder = ExprBuilder[c.type, futureSystem.type](c, self.futureSystem, anfTree)
+    val builder = ExprBuilder[c.type, futureSystem.type](c, self.futureSystem)
     import builder.futureSystemOps
 
     lazy val resumeFunTreeDummyBody = DefDef(Modifiers(), name.resume, Nil, List(Nil), Ident(definitions.UnitClass), Literal(Constant(())))

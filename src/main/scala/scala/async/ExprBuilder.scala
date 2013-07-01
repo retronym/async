@@ -8,7 +8,7 @@ import scala.collection.mutable.ListBuffer
 import collection.mutable
 import language.existentials
 
-final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSystem: FS, origTree: C#Tree) {
+final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSystem: FS) {
   builder =>
 
   val utils = TransformUtils[c.type](c)
@@ -363,10 +363,6 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
   }
 
   final case class Awaitable(expr: Tree, resultName: Symbol, resultType: Type, resultValDef: ValDef)
-
-  private val internalSyms = origTree.collect {
-    case dt: DefTree => dt.symbol
-  }
 
   private def mkResumeApply = Apply(Ident(name.resume), Nil)
 
