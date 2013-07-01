@@ -16,20 +16,16 @@ private[async] trait TransformUtils {
   import global._
 
   object name {
-    def suffix(string: String) = string + "$async"
-
-    def suffixedName(prefix: String) = newTermName(suffix(prefix))
-
-    val resume        = suffixedName("resume")
+    val resume        = newTermName("resume")
     val apply         = newTermName("apply")
     val matchRes      = "matchres"
     val ifRes         = "ifres"
     val await         = "await"
     val bindSuffix    = "$bind"
 
-    val state         = suffixedName("state")
-    val result        = suffixedName("result")
-    val execContext   = suffixedName("execContext")
+    val state         = newTermName("state")
+    val result        = newTermName("result")
+    val execContext   = newTermName("execContext")
     val stateMachine  = newTermName(fresh("stateMachine"))
     val stateMachineT = stateMachine.toTypeName
     val tr            = newTermName("tr")

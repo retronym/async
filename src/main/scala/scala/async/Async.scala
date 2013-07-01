@@ -88,7 +88,7 @@ abstract class AsyncBase {
 
 /** Internal class used by the `async` macro; should not be manually extended by client code */
 abstract class StateMachine[Result, EC] extends (scala.util.Try[Any] => Unit) with (() => Unit) {
-  def result$async: Result
+  def result: Result
 
-  def execContext$async: EC
+  def execContext: EC
 }
