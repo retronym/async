@@ -67,9 +67,7 @@ private[async] trait AnfTransform {
         indent += 1
         def oneLine(s: Any) = s.toString.replaceAll( """\n""", "\\\\n").take(127)
         try {
-          AsyncUtils.trace(s"${
-            indentString
-          }$prefix(${oneLine(args)})")
+          AsyncUtils.trace(s"${indentString}$prefix(${oneLine(args)})")
           val result = t
           AsyncUtils.trace(s"${indentString}= ${oneLine(result)}")
           result
@@ -252,7 +250,5 @@ private[async] trait AnfTransform {
         }
       }
     }
-
   }
-
 }
