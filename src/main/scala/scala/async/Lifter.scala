@@ -4,17 +4,17 @@ trait Lifter {
   self: AsyncMacro =>
   import global._
 
-  def lift[E <: ExprBuilder[_, _]](asyncStates: List[E#AsyncState], stateMachine: Tree, applyBody: Tree, resumeBody: Tree): Tree = {
+  def lift(asyncStates: List[AsyncState], stateMachine: Tree, applyBody: Tree, resumeBody: Tree): Tree = {
     val lifted = liftables(asyncStates)
     spliceMethodBodies(lifted, stateMachine, applyBody, resumeBody)
   }
 
-  def liftables[E <: ExprBuilder[_, _]](asyncStates: Seq[E#AsyncState]): List[Tree] = {
+  def liftables(asyncStates: List[AsyncState]): List[Tree] = {
     val companions = collection.mutable.Map[Symbol, Symbol]()
     val defs0: Map[Tree, Int] = asyncStates.flatMap {
       asyncState =>
         val awaits = asyncState match {
-          case stateWithAwait: E#AsyncStateWithAwait =>
+          case stateWithAwait: AsyncStateWithAwait =>
             stateWithAwait.awaitable.resultValDef.asInstanceOf[Tree] :: Nil
           case _                                           => Seq()
         }

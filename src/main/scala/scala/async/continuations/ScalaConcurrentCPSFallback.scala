@@ -16,6 +16,9 @@ trait ScalaConcurrentCPSFallback {
   lazy val futureSystem = ScalaConcurrentFutureSystem
   type FS = ScalaConcurrentFutureSystem.type
 
+  lazy val futureSystem2 = ScalaConcurrentFutureSystem
+  type FS2 = ScalaConcurrentFutureSystem.type
+
   /* Fall-back for `await` when it is called at an unsupported position.
    */
   override def awaitFallback[T](awaitable: futureSystem.Fut[T]): T @cps[Future[Any]] =

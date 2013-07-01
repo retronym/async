@@ -7,17 +7,21 @@ import scala.reflect.macros.Context
 import scala.collection.mutable.ListBuffer
 import collection.mutable
 import language.existentials
+import scala.reflect.api.Universe
+import scala.reflect.api
 
-final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSystem: FS) {
-  builder =>
+trait ExprBuilder {
+  builder: AsyncMacro =>
 
-  val utils = TransformUtils[c.type](c)
+  import global._
 
-  import c.universe._
-  import utils._
+  val utils = this
+  val c: global.type = global
+
   import defn._
 
-  lazy val futureSystemOps = futureSystem.mkOps(c)
+  val futureSystem: FutureSystem
+  val futureSystemOps: futureSystem.Ops { val universe: global.type }
 
   val stateAssigner  = new StateAssigner
   val labelDefStates = collection.mutable.Map[Symbol, Int]()
@@ -27,11 +31,11 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
 
     def mkHandlerCaseForState: CaseDef
 
-    def mkOnCompleteHandler[T: c.WeakTypeTag]: Option[CaseDef] = None
+    def mkOnCompleteHandler[T: WeakTypeTag]: Option[CaseDef] = None
 
     def stats: List[Tree]
 
-    final def body: c.Tree = stats match {
+    final def body: Tree = stats match {
       case stat :: Nil => stat
       case init :+ last => Block(init, last)
     }
@@ -51,7 +55,7 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
   /** A sequence of statements with a conditional transition to the next state, which will represent
     * a branch of an `if` or a `match`.
     */
-  final class AsyncStateWithoutAwait(val stats: List[c.Tree], val state: Int) extends AsyncState {
+  final class AsyncStateWithoutAwait(val stats: List[Tree], val state: Int) extends AsyncState {
     override def mkHandlerCaseForState: CaseDef =
       mkHandlerCase(state, stats)
 
@@ -62,17 +66,17 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
   /** A sequence of statements that concludes with an `await` call. The `onComplete`
     * handler will unconditionally transition to `nestState`.``
     */
-  final class AsyncStateWithAwait(val stats: List[c.Tree], val state: Int, nextState: Int,
+  final class AsyncStateWithAwait(val stats: List[Tree], val state: Int, nextState: Int,
                                   val awaitable: Awaitable, symLookup: SymLookup)
     extends AsyncState {
 
     override def mkHandlerCaseForState: CaseDef = {
-      val callOnComplete = futureSystemOps.onComplete(c.Expr(awaitable.expr),
-        c.Expr(This(tpnme.EMPTY)), c.Expr(Ident(name.execContext))).tree
+      val callOnComplete = futureSystemOps.onComplete(Expr(awaitable.expr),
+        Expr(This(tpnme.EMPTY)), Expr(Ident(name.execContext))).tree
       mkHandlerCase(state, stats :+ callOnComplete)
     }
 
-    override def mkOnCompleteHandler[T: c.WeakTypeTag]: Option[CaseDef] = {
+    override def mkOnCompleteHandler[T: WeakTypeTag]: Option[CaseDef] = {
       val tryGetTree =
         Assign(
           Ident(awaitable.resultName),
@@ -90,8 +94,8 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
       val ifIsFailureTree =
         If(Select(Ident(symLookup.applyTrParam), Try_isFailure),
            futureSystemOps.completeProm[T](
-             c.Expr[futureSystem.Prom[T]](Ident(name.result)),
-             c.Expr[scala.util.Try[T]](
+             Expr[futureSystem.Prom[T]](Ident(name.result)),
+             Expr[scala.util.Try[T]](
                TypeApply(Select(Ident(symLookup.applyTrParam), newTermName("asInstanceOf")),
                          List(TypeTree(weakTypeOf[scala.util.Try[T]]))))).tree,
            Block(List(tryGetTree, mkStateTree(nextState)), mkResumeApply)
@@ -109,11 +113,11 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
    */
   final class AsyncStateBuilder(state: Int, private val nameMap: SymLookup) {
     /* Statements preceding an await call. */
-    private val stats                      = ListBuffer[c.Tree]()
+    private val stats                      = ListBuffer[Tree]()
     /** The state of the target of a LabelDef application (while loop jump) */
     private var nextJumpState: Option[Int] = None
 
-    def +=(stat: c.Tree): this.type = {
+    def +=(stat: Tree): this.type = {
       assert(nextJumpState.isEmpty, s"statement appeared after a label jump: $stat")
       def addStat() = stats += stat
       stat match {
@@ -139,7 +143,7 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
       new SimpleAsyncState(stats.toList, state, effectiveNextState)
     }
 
-    def resultWithIf(condTree: c.Tree, thenState: Int, elseState: Int): AsyncState = {
+    def resultWithIf(condTree: Tree, thenState: Int, elseState: Int): AsyncState = {
       def mkBranch(state: Int) = Block(mkStateTree(state) :: Nil, mkResumeApply)
       this += If(condTree, mkBranch(thenState), mkBranch(elseState))
       new AsyncStateWithoutAwait(stats.toList, state)
@@ -155,7 +159,7 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
      * @param caseStates      starting state of the right-hand side of the each case
      * @return                an `AsyncState` representing the match expression
      */
-    def resultWithMatch(scrutTree: c.Tree, cases: List[CaseDef], caseStates: List[Int]): AsyncState = {
+    def resultWithMatch(scrutTree: Tree, cases: List[CaseDef], caseStates: List[Int]): AsyncState = {
       // 1. build list of changed cases
       val newCases = for ((cas, num) <- cases.zipWithIndex) yield cas match {
         case CaseDef(pat, guard, rhs) =>
@@ -187,7 +191,7 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
    * @param endState    the state to continue with
    * @param symLookup    a `Map` for renaming the given key symbols to the corresponding symbols of lifted members
    */
-  final private class AsyncBlockBuilder(stats: List[c.Tree], expr: c.Tree, startState: Int, endState: Int,
+  final private class AsyncBlockBuilder(stats: List[Tree], expr: Tree, startState: Int, endState: Int,
                                         private val symLookup: SymLookup) {
     val asyncStates = ListBuffer[AsyncState]()
 
@@ -195,10 +199,10 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
     var currState    = startState
 
     /* TODO Fall back to CPS plug-in if tree contains an `await` call. */
-    def checkForUnsupportedAwait(tree: c.Tree) = if (tree exists {
+    def checkForUnsupportedAwait(tree: Tree) = if (tree exists {
       case Apply(fun, _) if isAwait(fun) => true
       case _                             => false
-    }) c.abort(tree.pos, "await must not be used in this position") //throw new FallbackToCpsException
+    }) c.reporter.error(tree.pos, "await must not be used in this position") //throw new FallbackToCpsException
 
     def nestedBlockBuilder(nestedTree: Tree, startState: Int, endState: Int) = {
       val (nestedStats, nestedExpr) = statsAndExpr(nestedTree)
@@ -299,9 +303,9 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
       def mkCombinedHandlerCases[T]: List[CaseDef] = {
         val caseForLastState: CaseDef = {
           val lastState = asyncStates.last
-          val lastStateBody = c.Expr[T](lastState.body)
+          val lastStateBody = Expr[T](lastState.body)
           val rhs = futureSystemOps.completeProm(
-            c.Expr[futureSystem.Prom[T]](Ident(name.result)), reify(scala.util.Success(lastStateBody.splice)))
+            Expr[futureSystem.Prom[T]](Ident(name.result)), reify(scala.util.Success(lastStateBody.splice)))
           mkHandlerCase(lastState.state, rhs.tree)
         }
         asyncStates.toList match {
@@ -351,9 +355,10 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
                 Bind(name.t, Ident(nme.WILDCARD)),
                 Apply(Ident(defn.NonFatalClass), List(Ident(name.t))),
                 Block(List({
-                  val t = c.Expr[Throwable](Ident(name.t))
-                  futureSystemOps.completeProm[T](c.Expr[futureSystem.Prom[T]](Ident(name.result)), reify(scala.util.Failure(t.splice))).tree
-                }), c.literalUnit.tree))), EmptyTree))
+                  val t = Expr[Throwable](Ident(name.t))
+                  futureSystemOps.completeProm[T](
+                    Expr[futureSystem.Prom[T]](Ident(name.result)), reify(scala.util.Failure(t.splice))).tree
+                }), literalUnit))), EmptyTree))
     }
   }
 
@@ -366,12 +371,14 @@ final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSyste
 
   private def mkResumeApply = Apply(Ident(name.resume), Nil)
 
-  private def mkStateTree(nextState: Int): c.Tree =
-    Assign(Ident(name.state), c.literal(nextState).tree)
+  private def mkStateTree(nextState: Int): Tree =
+    Assign(Ident(name.state), Literal(Constant(nextState)))
 
-  private def mkHandlerCase(num: Int, rhs: List[c.Tree]): CaseDef =
-    mkHandlerCase(num, Block(rhs, c.literalUnit.tree))
+  private def mkHandlerCase(num: Int, rhs: List[Tree]): CaseDef =
+    mkHandlerCase(num, Block(rhs, literalUnit))
 
-  private def mkHandlerCase(num: Int, rhs: c.Tree): CaseDef =
-    CaseDef(c.literal(num).tree, EmptyTree, rhs)
+  private def mkHandlerCase(num: Int, rhs: Tree): CaseDef =
+    CaseDef(Literal(Constant(num)), EmptyTree, rhs)
+
+  private def literalUnit = Literal(Constant(()))
 }

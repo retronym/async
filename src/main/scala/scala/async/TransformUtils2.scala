@@ -26,6 +26,14 @@ private[async] trait TransformUtils2 {
     val await         = "await"
     val bindSuffix    = "$bind"
 
+    val state         = suffixedName("state")
+    val result        = suffixedName("result")
+    val execContext   = suffixedName("execContext")
+    val stateMachine  = newTermName(fresh("stateMachine"))
+    val stateMachineT = stateMachine.toTypeName
+    val tr            = newTermName("tr")
+    val t             = newTermName("throwable")
+
     def fresh(name: TermName): TermName = newTermName(fresh(name.toString))
 
     def fresh(name: String): String = if (name.toString.contains("$")) name else currentUnit.freshTermName("" + name + "$").toString
@@ -56,14 +64,37 @@ private[async] trait TransformUtils2 {
     (i, j) => util.Try(namess(i)(j)).getOrElse(s"arg_${i}_${j}")
   }
 
+  def Expr[A: WeakTypeTag](t: Tree) = global.Expr[A](rootMirror, new reflect.api.TreeCreator {
+    def apply[U <: reflect.api.Universe with Singleton](m: reflect.api.Mirror[U]): U#Tree = t.asInstanceOf[U#Tree]
+  })
+
+
   object defn {
-    private def asyncMember(name: String) = {
-      val asyncMod = rootMirror.staticClass("scala.async.AsyncBase")
-      val tpe = asyncMod.asType.toType
-      tpe.member(newTermName(name)).ensuring(_ != NoSymbol)
+    def mkList_apply[A](args: List[Expr[A]]): Expr[List[A]] = {
+      Expr(Apply(Ident(definitions.List_apply), args.map(_.tree)))
     }
 
-    val Async_await = asyncMember("await")
+    def mkList_contains[A](self: Expr[List[A]])(elem: Expr[Any]) = reify(self.splice.contains(elem.splice))
+
+    def mkFunction_apply[A, B](self: Expr[Function1[A, B]])(arg: Expr[A]) = reify {
+      self.splice.apply(arg.splice)
+    }
+
+    def mkAny_==(self: Expr[Any])(other: Expr[Any]) = reify {
+      self.splice == other.splice
+    }
+
+    def mkTry_get[A](self: Expr[util.Try[A]]) = reify {
+      self.splice.get
+    }
+
+    val TryClass      = rootMirror.staticClass("scala.util.Try")
+    val Try_get       = TryClass.typeSignature.member(newTermName("get")).ensuring(_ != NoSymbol)
+    val Try_isFailure = TryClass.typeSignature.member(newTermName("isFailure")).ensuring(_ != NoSymbol)
+    val TryAnyType    = appliedType(TryClass.toType, List(definitions.AnyTpe))
+    val NonFatalClass = rootMirror.staticModule("scala.util.control.NonFatal")
+    val AsyncClass    = rootMirror.staticClass("scala.async.AsyncBase")
+    val Async_await   = AsyncClass.typeSignature.member(newTermName("await")).ensuring(_ != NoSymbol)
   }
 
   def isSafeToInline(tree: Tree) = {
@@ -113,4 +144,19 @@ private[async] trait TransformUtils2 {
       }
     }.unzip
   }
+
+
+  def statsAndExpr(tree: Tree): (List[Tree], Tree) = tree match {
+    case Block(stats, expr) => (stats, expr)
+    case _                  => (List(tree), Literal(Constant(())))
+  }
+
+  def emptyConstructor: DefDef = {
+    val emptySuperCall = Apply(Select(Super(This(tpnme.EMPTY), tpnme.EMPTY), nme.CONSTRUCTOR), Nil)
+    DefDef(NoMods, nme.CONSTRUCTOR, List(), List(List()), TypeTree(), Block(List(emptySuperCall), Literal(Constant(()))))
+  }
+
+  def applied(className: String, types: List[Type]): AppliedTypeTree =
+    AppliedTypeTree(Ident(rootMirror.staticClass(className)), types.map(TypeTree(_)))
+
 }
