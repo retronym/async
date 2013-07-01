@@ -26,20 +26,6 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
     analyzer.hasUnsupportedAwaits
   }
 
-  /**
-   * Analyze the contents of an `async` block in order to:
-   * - Find which local `ValDef`-s need to be lifted to fields of the state machine, based
-   * on whether or not they are accessed only from a single state.
-   *
-   * Must be called on the ANF transformed tree.
-   */
-  def defTreesUsedInSubsequentStates(tree: Tree): List[DefTree] = {
-    val analyzer = new AsyncDefinitionUseAnalyzer
-    analyzer.traverse(tree)
-    val liftable: List[DefTree] = (analyzer.valDefsToLift ++ analyzer.nestedMethodsToLift).toList.distinct
-    liftable
-  }
-
   private class UnsupportedAwaitAnalyzer extends AsyncTraverser {
     var hasUnsupportedAwaits = false
 
@@ -103,91 +89,4 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
         c.error(pos, msg)
     }
   }
-
-  private class AsyncDefinitionUseAnalyzer extends AsyncTraverser {
-    private var chunkId = 0
-
-    private def nextChunk() = chunkId += 1
-
-    private var valDefChunkId = Map[Symbol, (ValDef, Int)]()
-
-    val valDefsToLift      : mutable.Set[ValDef] = collection.mutable.Set()
-    val nestedMethodsToLift: mutable.Set[DefDef] = collection.mutable.Set()
-
-    override def nestedMethod(defDef: DefDef) {
-      nestedMethodsToLift += defDef
-      markReferencedVals(defDef)
-    }
-
-    override def function(function: Function) {
-      markReferencedVals(function)
-    }
-
-    override def patMatFunction(tree: Match) {
-      markReferencedVals(tree)
-    }
-
-    override def nestedClass(classDef: ClassDef) {
-      markReferencedVals(classDef)
-    }
-
-    override def nestedModule(module: ModuleDef) {
-      markReferencedVals(module)
-    }
-
-    private def markReferencedVals(tree: Tree) {
-      tree foreach {
-        case rt: RefTree =>
-          valDefChunkId.get(rt.symbol) match {
-            case Some((vd, defChunkId)) =>
-              valDefsToLift += vd // lift all vals referred to by nested functions.
-            case _                      =>
-          }
-        case _           =>
-      }
-    }
-
-    override def traverse(tree: Tree) = {
-      tree match {
-        case If(cond, thenp, elsep) if tree exists isAwait     =>
-          traverseChunks(List(cond, thenp, elsep))
-        case Match(selector, cases) if tree exists isAwait     =>
-          traverseChunks(selector :: cases)
-        case LabelDef(name, params, rhs) if rhs exists isAwait =>
-          traverseChunks(rhs :: Nil)
-        case Apply(fun, args) if isAwait(fun)                  =>
-          super.traverse(tree)
-          nextChunk()
-        case vd: ValDef                                        =>
-          super.traverse(tree)
-          valDefChunkId += (vd.symbol -> (vd -> chunkId))
-          val isPatternBinder = vd.name.toString.contains(name.bindSuffix)
-          if (isAwait(vd.rhs) || isPatternBinder) valDefsToLift += vd
-        case as: Assign                                        =>
-          if (isAwait(as.rhs)) {
-            assert(as.lhs.symbol != null, "internal error: null symbol for Assign tree:" + as + " " + as.lhs.symbol)
-
-            // TODO test the orElse case, try to remove the restriction.
-            val (vd, defBlockId) = valDefChunkId.getOrElse(as.lhs.symbol, c.abort(as.pos, s"await may only be assigned to a var/val defined in the async block. ${as.lhs} ${as.lhs.symbol}"))
-            valDefsToLift += vd
-          }
-          super.traverse(tree)
-        case rt: RefTree                                       =>
-          valDefChunkId.get(rt.symbol) match {
-            case Some((vd, defChunkId)) if defChunkId != chunkId =>
-              valDefsToLift += vd
-            case _                                               =>
-          }
-          super.traverse(tree)
-        case _                                                 => super.traverse(tree)
-      }
-    }
-
-    private def traverseChunks(trees: List[Tree]) {
-      trees.foreach {
-        t => traverse(t); nextChunk()
-      }
-    }
-  }
-
 }

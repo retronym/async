@@ -68,14 +68,13 @@ class ToughTypeSpec {
     } mustBe 3
   }
 
+  // TODO failing with an untyped tree `asInstanceOf` at Erasure.
   @Test def nestedCaseClassAndModuleAllowed() {
     import AsyncId.{await, async}
     async {
       case class Person(name: String)
       val fut = async { "bob" }
-      //object O
       val x = Person(await(fut))
-//      O.toString
       x.name
     } mustBe "bob"
   }

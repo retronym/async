@@ -113,13 +113,10 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     /** The state of the target of a LabelDef application (while loop jump) */
     private var nextJumpState: Option[Int] = None
 
-    private def renameReset(tree: Tree) = tree //substituteNames(tree, nameMap.toRename)
-
     def +=(stat: c.Tree): this.type = {
       assert(nextJumpState.isEmpty, s"statement appeared after a label jump: $stat")
-      def addStat() = stats += renameReset(stat)
+      def addStat() = stats += stat
       stat match {
-        case _: DefDef       => // these have been lifted.
         case Apply(fun, Nil) =>
           labelDefStates get fun.symbol match {
             case Some(nextState) => nextJumpState = Some(nextState)
@@ -133,9 +130,8 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     def resultWithAwait(awaitable: Awaitable,
                         nextState: Int,
                         symLookup: SymLookup): AsyncState = {
-      val sanitizedAwaitable = awaitable.copy(expr = renameReset(awaitable.expr))
       val effectiveNextState = nextJumpState.getOrElse(nextState)
-      new AsyncStateWithAwait(stats.toList, state, effectiveNextState, sanitizedAwaitable, symLookup)
+      new AsyncStateWithAwait(stats.toList, state, effectiveNextState, awaitable, symLookup)
     }
 
     def resultSimple(nextState: Int): AsyncState = {
@@ -144,11 +140,8 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
     }
 
     def resultWithIf(condTree: c.Tree, thenState: Int, elseState: Int): AsyncState = {
-      // 1. build changed if-else tree
-      // 2. insert that tree at the end of the current state
-      val cond = renameReset(condTree)
       def mkBranch(state: Int) = Block(mkStateTree(state) :: Nil, mkResumeApply)
-      this += If(cond, mkBranch(thenState), mkBranch(elseState))
+      this += If(condTree, mkBranch(thenState), mkBranch(elseState))
       new AsyncStateWithoutAwait(stats.toList, state)
     }
 
@@ -173,7 +166,7 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
           CaseDef(pat, guard, Block(bindAssigns :+ mkStateTree(caseStates(num)), mkResumeApply))
       }
       // 2. insert changed match tree at the end of the current state
-      this += Match(renameReset(scrutTree), newCases)
+      this += Match(scrutTree, newCases)
       new AsyncStateWithoutAwait(stats.toList, state)
     }
 

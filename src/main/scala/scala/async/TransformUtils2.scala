@@ -35,7 +35,7 @@ private[async] trait TransformUtils2 {
 
     def fresh(name: TermName): TermName = newTermName(fresh(name.toString))
 
-    def fresh(name: String): String = if (name.toString.contains("$")) name else currentUnit.freshTermName("" + name + "$")
+    def fresh(name: String): String = if (name.toString.contains("$")) name else currentUnit.freshTermName("" + name + "$").toString
   }
 
   def defaultValue(tpe: Type): Literal = {

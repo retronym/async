@@ -17,7 +17,7 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
   abstract class MacroTypingTransformer extends TypingTransformer(callSiteTyper.context.unit) {
     currentOwner = callSiteTyper.context.owner
     def currOwner: Symbol = currentOwner
-    localTyper = global.analyzer.newTyper(callSiteTyper.context.make(callSiteTyper.context.unit))
+    localTyper = global.analyzer.newTyper(callSiteTyper.context.make(unit = callSiteTyper.context.unit))
   }
 
   def transformAt(tree: Tree)(f: PartialFunction[Tree, (analyzer.Context => Tree)]) = {
@@ -31,12 +31,25 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
     trans.transform(tree)
   }
 
-  def spliceMethodBodies(liftables: List[Tree], tree: Tree, applyBody: Tree,
-                         resumeBody: Tree, lifted: Map[Symbol, Symbol]): Tree = {
-    lifted.values.foreach(tree.symbol.info.decls.enter)
-    val stateMachineClass = tree.symbol
+  def changeOwner(tree: Tree, oldOwner: Symbol, newOwner: Symbol): tree.type = {
+    new ChangeOwnerAndModuleClassTraverser(oldOwner, newOwner).traverse(tree)
+    tree
+  }
 
-    val (fromSyms, toSyms) = lifted.toList.unzip
+
+  def spliceMethodBodies(liftables: List[Tree], tree: Tree, applyBody: Tree,
+                         resumeBody: Tree): Tree = {
+
+    val liftedSyms = liftables.map(_.symbol).toSet
+    val stateMachineClass = tree.symbol
+    liftedSyms.foreach {
+      sym =>
+        if (sym != null) {
+          sym.owner = stateMachineClass
+          if (sym.isModule)
+            sym.moduleClass.owner = stateMachineClass
+        }
+    }
     // Replace the ValDefs in the splicee with Assigns to the corresponding lifted
     // fields. Similarly, replace references to them with references to the field.
     //
@@ -45,11 +58,16 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
       override def transform(tree: Tree): Tree = tree match {
         case _ if currentOwner == stateMachineClass =>
           super.transform(tree)
-        case ValDef(_, _, _, rhs) if toSyms.contains(tree.symbol) =>
-          val fieldSym = tree.symbol
-          val set = Assign(gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym), transform(rhs))
-          localTyper.typedPos(tree.pos)(set)
-        case Ident(name) if toSyms.contains(tree.symbol) =>
+        case ValDef(_, _, _, rhs) if liftedSyms(tree.symbol) =>
+          atOwner(currentOwner) {
+            val fieldSym = tree.symbol
+            val set = Assign(gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym), transform(rhs))
+            changeOwner(set, tree.symbol, currentOwner)
+            localTyper.typedPos(tree.pos)(set)
+          }
+        case _: DefTree if liftedSyms(tree.symbol) =>
+          EmptyTree
+        case Ident(name) if liftedSyms(tree.symbol) =>
           val fieldSym = tree.symbol
           gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym).setType(tree.tpe)
         case _ =>
@@ -57,28 +75,47 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
       }
     }
 
+    val liftablesUseFields = liftables.map {
+      case vd: ValDef => vd
+      case x =>
+        val useField = new UseFields()
+        //.substituteSymbols(fromSyms, toSyms)
+        useField.atOwner(stateMachineClass)(useField.transform(x))
+    }
+
     tree.children.foreach { t =>
       new ChangeOwnerAndModuleClassTraverser(callSiteTyper.context.owner, tree.symbol).traverse(t)
     }
-    val treeSubst = new UseFields().transform(tree.substituteSymbols(fromSyms, toSyms))
+    val treeSubst = tree
 
     def fixup(dd: DefDef, body: Tree, ctx: analyzer.Context): Tree = {
-      new ChangeOwnerAndModuleClassTraverser(callSiteTyper.context.owner, dd.symbol).traverse(body)
       // substitute old symbols for the new. We have to use the `UseFields` transform
       // afterwards to complete things.
-      val spliceeAnfFixedOwnerSyms = body.substituteSymbols(fromSyms, toSyms)
-      val newRhs = new UseFields().transform(spliceeAnfFixedOwnerSyms)
+      val spliceeAnfFixedOwnerSyms = body
+      val useField = new UseFields()
+      //.substituteSymbols(fromSyms, toSyms)
+      val newRhs = useField.atOwner(dd.symbol)(useField.transform(spliceeAnfFixedOwnerSyms))
       val typer = global.analyzer.newTyper(ctx.make(dd, dd.symbol))
       treeCopy.DefDef(dd, dd.mods, dd.name, dd.tparams, dd.vparamss, dd.tpt, typer.typed(newRhs))
     }
-    val result = transformAt(treeSubst) {
-      case dd @ DefDef(_, name.apply, _, List(List(_)), _, _) =>
+
+    liftablesUseFields.foreach(t => if (t.symbol != null) stateMachineClass.info.decls.enter(t.symbol))
+
+    val result0 = transformAt(treeSubst) {
+      case t @ Template(parents, self, stats) =>
+        (ctx: analyzer.Context) => {
+          treeCopy.Template(t, parents, self, liftablesUseFields ++ stats)
+        }
+    }
+    val result = transformAt(result0) {
+      case dd@DefDef(_, name.apply, _, List(List(_)), _, _) =>
         (ctx: analyzer.Context) =>
-          val typedTree = fixup(dd, applyBody, ctx)
+          val typedTree = fixup(dd, changeOwner(applyBody, callSiteTyper.context.owner, dd.symbol), ctx)
           typedTree
-      case dd @ DefDef(_, name.resume, _, _, _, _) =>
+      case dd@DefDef(_, name.resume, _, _, _, _)            =>
         (ctx: analyzer.Context) =>
-          val res = fixup(dd, resumeBody, ctx)
+          val changed = changeOwner(resumeBody, callSiteTyper.context.owner, dd.symbol)
+          val res = fixup(dd, changed, ctx)
           res
     }
     result
@@ -129,11 +166,20 @@ private[async] trait AnfTransform extends TypingTransformers {
     def transformToList(tree: Tree): List[Tree] = blockToList(transform(tree))
 
     override def transform(tree: Tree): Tree = {
-      val trees: List[Tree] = mode match {
-        case Anf         => anf.transformToList0(tree)
-        case Linearizing => linearize.transformToList0(tree)
+      def anfLinearize = {
+        val trees: List[Tree] = mode match {
+          case Anf         => anf.transformToList0(tree)
+          case Linearizing => linearize.transformToList0(tree)
+        }
+        listToBlock(trees)
       }
-      listToBlock(trees)
+      tree match {
+        case _: ValDef | _: DefDef | _: Function | _: ClassDef | _: TypeDef =>
+          atOwner(tree.symbol)(anfLinearize)
+        case _: ModuleDef =>
+          atOwner(tree.symbol.moduleClass orElse tree.symbol)(anfLinearize)
+        case _ => anfLinearize
+      }
     }
 
     private object trace {
@@ -224,7 +270,8 @@ private[async] trait AnfTransform extends TypingTransformers {
 
     private def defineVal(prefix: String, lhs: Tree, pos: Position): ValDef = {
       val sym = currOwner.newTermSymbol(name.fresh(prefix), pos, SYNTHETIC).setTypeSignature(lhs.tpe)
-      localTyper.typedPos(pos)(ValDef(sym, lhs)).asInstanceOf[ValDef]
+      changeOwner(lhs, currentOwner, sym)
+      ValDef(sym, changeOwner(lhs, currentOwner, sym)).setType(NoType).setPos(pos)
     }
 
     private object anf {
@@ -247,13 +294,15 @@ private[async] trait AnfTransform extends TypingTransformers {
             val (argStatss, argExprss): (List[List[List[Tree]]], List[List[Tree]]) =
               mapArgumentss[List[Tree]](fun, argss) {
                 case Arg(expr, byName, _) if byName /*|| isPure(expr) TODO */    => (Nil, expr)
-                case Arg(expr@Ident(name), _, _) if isAwaitRef(name)        => (Nil, expr) // not typed, so it eludes the check in `isSafeToInline`
+                case Arg(expr@Ident(name), _, _) if isAwaitRef(name)        => (Nil, expr) // TODO needed? // not typed, so it eludes the check in `isSafeToInline`
                 case Arg(expr, _, argName)                                  =>
                   linearize.transformToList(expr) match {
                     case stats :+ expr1 =>
                       val valDef = defineVal(argName, expr1, expr1.pos)
                       require(valDef.tpe != null, valDef)
-                      (stats :+ valDef, gen.mkAttributedStableRef(valDef.symbol))
+                      val stats1 = stats :+ valDef
+                      //stats1.foreach(changeOwner(_, currentOwner, currentOwner.owner))
+                      (stats1, gen.stabilize(gen.mkAttributedIdent(valDef.symbol)))
                   }
               }
             val applied = treeInfo.dissectApplied(tree)
@@ -266,7 +315,8 @@ private[async] trait AnfTransform extends TypingTransformers {
 
           case ValDef(mods, name, tpt, rhs) =>
             if (rhs exists isAwait) {
-              val stats :+ expr = linearize.transformToList(rhs)
+              val stats :+ expr = atOwner(currOwner.owner)(linearize.transformToList(rhs))
+              stats.foreach(changeOwner(_, currOwner, currOwner.owner))
               stats :+ treeCopy.ValDef(tree, mods, name, tpt, expr)
             } else List(tree)
 
@@ -297,7 +347,6 @@ private[async] trait AnfTransform extends TypingTransformers {
                 val block = linearize.transformToBlock(body)
                 val (valDefs, mappings) = (pat collect {
                   case b@Bind(name, _) =>
-                    val newName = newTermName(AnfTransform.this.name.fresh(name.toTermName + AnfTransform.this.name.bindSuffix))
                     val vd = defineVal(name.toTermName + AnfTransform.this.name.bindSuffix, gen.mkAttributedStableRef(b.symbol), b.pos)
                     (vd, (b.symbol, vd.symbol))
                 }).unzip

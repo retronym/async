@@ -1,4 +1,4 @@
-scalaVersion := "2.10.1"
+scalaVersion := "2.10.2"
 
 organization := "org.typesafe.async" // TODO new org name under scala-lang.
 
