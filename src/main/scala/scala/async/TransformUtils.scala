@@ -5,6 +5,7 @@ package scala.async
 
 import scala.reflect.macros.Context
 import reflect.ClassTag
+import scala.reflect.macros.runtime.AbortMacroException
 
 /**
  * Utilities used in both `ExprBuilder` and `AnfTransform`.
@@ -201,6 +202,44 @@ private[async] trait TransformUtils {
           traverse(fun)
         case _                     => super.traverse(tree)
       }
+    }
+  }
+
+  def abort(pos: Position, msg: String) = throw new AbortMacroException(pos, msg)
+
+  abstract class MacroTypingTransformer extends TypingTransformer(callSiteTyper.context.unit) {
+    currentOwner = callSiteTyper.context.owner
+
+    def currOwner: Symbol = currentOwner
+
+    localTyper = global.analyzer.newTyper(callSiteTyper.context.make(unit = callSiteTyper.context.unit))
+  }
+
+  def transformAt(tree: Tree)(f: PartialFunction[Tree, (analyzer.Context => Tree)]) = {
+    object trans extends MacroTypingTransformer {
+      override def transform(tree: Tree): Tree = {
+        if (f.isDefinedAt(tree)) {
+          f(tree)(localTyper.context)
+        } else super.transform(tree)
+      }
+    }
+    trans.transform(tree)
+  }
+
+  def changeOwner(tree: Tree, oldOwner: Symbol, newOwner: Symbol): tree.type = {
+    new ChangeOwnerAndModuleClassTraverser(oldOwner, newOwner).traverse(tree)
+    tree
+  }
+
+  class ChangeOwnerAndModuleClassTraverser(oldowner: Symbol, newowner: Symbol)
+    extends ChangeOwnerTraverser(oldowner, newowner) {
+
+    override def traverse(tree: Tree) {
+      tree match {
+        case _: DefTree => change(tree.symbol.moduleClass)
+        case _          =>
+      }
+      super.traverse(tree)
     }
   }
 }

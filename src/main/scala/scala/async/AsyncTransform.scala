@@ -93,4 +93,86 @@ trait AsyncTransform {
     AsyncUtils.vprintln(s"ANF transform expands to:\n $anfTree")
     states foreach (s => AsyncUtils.vprintln(s))
   }
+
+  def spliceMethodBodies(liftables: List[Tree], tree: Tree, applyBody: Tree,
+                         resumeBody: Tree): Tree = {
+
+    val liftedSyms = liftables.map(_.symbol).toSet
+    val stateMachineClass = tree.symbol
+    liftedSyms.foreach {
+      sym =>
+        if (sym != null) {
+          sym.owner = stateMachineClass
+          if (sym.isModule)
+            sym.moduleClass.owner = stateMachineClass
+        }
+    }
+    // Replace the ValDefs in the splicee with Assigns to the corresponding lifted
+    // fields. Similarly, replace references to them with references to the field.
+    //
+    // This transform will be only be run on the RHS of `def foo`.
+    class UseFields extends MacroTypingTransformer {
+      override def transform(tree: Tree): Tree = tree match {
+        case _ if currentOwner == stateMachineClass          =>
+          super.transform(tree)
+        case ValDef(_, _, _, rhs) if liftedSyms(tree.symbol) =>
+          atOwner(currentOwner) {
+            val fieldSym = tree.symbol
+            val set = Assign(gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym), transform(rhs))
+            changeOwner(set, tree.symbol, currentOwner)
+            localTyper.typedPos(tree.pos)(set)
+          }
+        case _: DefTree if liftedSyms(tree.symbol)           =>
+          EmptyTree
+        case Ident(name) if liftedSyms(tree.symbol)          =>
+          val fieldSym = tree.symbol
+          gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym).setType(tree.tpe)
+        case _                                               =>
+          super.transform(tree)
+      }
+    }
+
+    val liftablesUseFields = liftables.map {
+      case vd: ValDef => vd
+      case x          =>
+        val useField = new UseFields()
+        //.substituteSymbols(fromSyms, toSyms)
+        useField.atOwner(stateMachineClass)(useField.transform(x))
+    }
+
+    tree.children.foreach {
+      t =>
+        new ChangeOwnerAndModuleClassTraverser(callSiteTyper.context.owner, tree.symbol).traverse(t)
+    }
+    val treeSubst = tree
+
+    def fixup(dd: DefDef, body: Tree, ctx: analyzer.Context): Tree = {
+      val spliceeAnfFixedOwnerSyms = body
+      val useField = new UseFields()
+      val newRhs = useField.atOwner(dd.symbol)(useField.transform(spliceeAnfFixedOwnerSyms))
+      val typer = global.analyzer.newTyper(ctx.make(dd, dd.symbol))
+      treeCopy.DefDef(dd, dd.mods, dd.name, dd.tparams, dd.vparamss, dd.tpt, typer.typed(newRhs))
+    }
+
+    liftablesUseFields.foreach(t => if (t.symbol != null) stateMachineClass.info.decls.enter(t.symbol))
+
+    val result0 = transformAt(treeSubst) {
+      case t@Template(parents, self, stats) =>
+        (ctx: analyzer.Context) => {
+          treeCopy.Template(t, parents, self, liftablesUseFields ++ stats)
+        }
+    }
+    val result = transformAt(result0) {
+      case dd@DefDef(_, name.apply, _, List(List(_)), _, _) =>
+        (ctx: analyzer.Context) =>
+          val typedTree = fixup(dd, changeOwner(applyBody, callSiteTyper.context.owner, dd.symbol), ctx)
+          typedTree
+      case dd@DefDef(_, name.resume, _, _, _, _)            =>
+        (ctx: analyzer.Context) =>
+          val changed = changeOwner(resumeBody, callSiteTyper.context.owner, dd.symbol)
+          val res = fixup(dd, changed, ctx)
+          res
+    }
+    result
+  }
 }
