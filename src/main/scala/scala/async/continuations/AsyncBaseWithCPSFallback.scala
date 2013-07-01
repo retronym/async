@@ -91,9 +91,9 @@ trait AsyncBaseWithCPSFallback extends AsyncBase {
                                           (execContext: c.Expr[futureSystem.ExecContext]): c.Expr[futureSystem.Fut[T]] = {
     AsyncUtils.vprintln("AsyncBaseWithCPSFallback.asyncImpl")
 
-    val analyzer = AsyncAnalysis[c.type](c, this)
+    val asyncMacro = AsyncMacro(c, futureSystem)
 
-    if (!analyzer.reportUnsupportedAwaits(body.tree))
+    if (!asyncMacro.reportUnsupportedAwaits(body.tree.asInstanceOf[asyncMacro.global.Tree], report = fallbackEnabled))
       super.asyncImpl[T](c)(body)(execContext)   // no unsupported awaits
     else
       cpsBasedAsyncImpl[T](c)(body)(execContext) // fallback to CPS

@@ -7,12 +7,10 @@ package scala.async
 import scala.reflect.macros.Context
 import scala.collection.mutable
 
-private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: AsyncBase) {
-  import c.universe._
+trait AsyncAnalysis {
+  self: AsyncMacro =>
 
-  val utils = TransformUtils[c.type](c)
-
-  import utils._
+  import global._
 
   /**
    * Analyze the contents of an `async` block in order to:
@@ -20,13 +18,13 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
    *
    * Must be called on the original tree, not on the ANF transformed tree.
    */
-  def reportUnsupportedAwaits(tree: Tree): Boolean = {
-    val analyzer = new UnsupportedAwaitAnalyzer
+  def reportUnsupportedAwaits(tree: Tree, report: Boolean): Boolean = {
+    val analyzer = new UnsupportedAwaitAnalyzer(report)
     analyzer.traverse(tree)
     analyzer.hasUnsupportedAwaits
   }
 
-  private class UnsupportedAwaitAnalyzer extends AsyncTraverser {
+  private class UnsupportedAwaitAnalyzer(report: Boolean) extends AsyncTraverser {
     var hasUnsupportedAwaits = false
 
     override def nestedClass(classDef: ClassDef) {
@@ -61,9 +59,9 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
           reportUnsupportedAwait(tree, "try/catch")
           super.traverse(tree)
         case Return(_)                                        =>
-          c.abort(tree.pos, "return is illegal within a async block")
+          abort(tree.pos, "return is illegal within a async block")
         case ValDef(mods, _, _, _) if mods.hasFlag(Flag.LAZY) =>
-          c.abort(tree.pos, "lazy vals are illegal within an async block")
+          abort(tree.pos, "lazy vals are illegal within an async block")
         case _                                                =>
           super.traverse(tree)
       }
@@ -85,8 +83,8 @@ private[async] final case class AsyncAnalysis[C <: Context](c: C, asyncBase: Asy
 
     private def reportError(pos: Position, msg: String) {
       hasUnsupportedAwaits = true
-      if (!asyncBase.fallbackEnabled)
-        c.error(pos, msg)
+      if (report)
+        abort(pos, msg)
     }
   }
 }

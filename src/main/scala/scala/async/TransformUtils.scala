@@ -9,83 +9,38 @@ import reflect.ClassTag
 /**
  * Utilities used in both `ExprBuilder` and `AnfTransform`.
  */
-private[async] final case class TransformUtils[C <: Context](c: C) {
+private[async] trait TransformUtils {
+  self: AsyncMacro =>
 
-  import c.universe._
+  import global._
 
   object name {
     def suffix(string: String) = string + "$async"
 
     def suffixedName(prefix: String) = newTermName(suffix(prefix))
 
+    val resume        = suffixedName("resume")
+    val apply         = newTermName("apply")
+    val matchRes      = "matchres"
+    val ifRes         = "ifres"
+    val await         = "await"
+    val bindSuffix    = "$bind"
+
     val state         = suffixedName("state")
     val result        = suffixedName("result")
-    val resume        = suffixedName("resume")
     val execContext   = suffixedName("execContext")
     val stateMachine  = newTermName(fresh("stateMachine"))
     val stateMachineT = stateMachine.toTypeName
-    val apply         = newTermName("apply")
     val tr            = newTermName("tr")
     val t             = newTermName("throwable")
-    val bindSuffix    = "$bind"
 
     def fresh(name: TermName): TermName = newTermName(fresh(name.toString))
 
-    def fresh(name: String): String = if (name.toString.contains("$")) name else c.fresh("" + name + "$")
-  }
-
-  def defaultValue(tpe: Type): Tree = {
-    val symtab = c.universe.asInstanceOf[reflect.internal.SymbolTable]
-    symtab.gen.mkZero(tpe.asInstanceOf[symtab.Type]).asInstanceOf[Tree]
+    def fresh(name: String): String = if (name.toString.contains("$")) name else currentUnit.freshTermName("" + name + "$").toString
   }
 
   def isAwait(fun: Tree) =
     fun.symbol == defn.Async_await
-
-  /** Descends into the regions of the tree that are subject to the
-    * translation to a state machine by `async`. When a nested template,
-    * function, or by-name argument is encountered, the descent stops,
-    * and `nestedClass` etc are invoked.
-    */
-  trait AsyncTraverser extends Traverser {
-    def nestedClass(classDef: ClassDef) {
-    }
-
-    def nestedModule(module: ModuleDef) {
-    }
-
-    def nestedMethod(module: DefDef) {
-    }
-
-    def byNameArgument(arg: Tree) {
-    }
-
-    def function(function: Function) {
-    }
-
-    def patMatFunction(tree: Match) {
-    }
-
-    override def traverse(tree: Tree) {
-      tree match {
-        case cd: ClassDef          => nestedClass(cd)
-        case md: ModuleDef         => nestedModule(md)
-        case dd: DefDef            => nestedMethod(dd)
-        case fun: Function         => function(fun)
-        case m@Match(EmptyTree, _) => patMatFunction(m) // Pattern matching anonymous function under -Xoldpatmat of after `restorePatternMatchingFunctions`
-        case Applied(fun, targs, argss) if argss.nonEmpty =>
-          val isInByName = isByName(fun)
-          for ((args, i) <- argss.zipWithIndex) {
-            for ((arg, j) <- args.zipWithIndex) {
-              if (!isInByName(i, j)) traverse(arg)
-              else byNameArgument(arg)
-            }
-          }
-          traverse(fun)
-        case _                     => super.traverse(tree)
-      }
-    }
-  }
 
   private lazy val Boolean_ShortCircuits: Set[Symbol] = {
     import definitions.BooleanClass
@@ -95,50 +50,28 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
     Set(Boolean_&&, Boolean_||)
   }
 
-  def isByName(fun: Tree): ((Int, Int) => Boolean) = {
+  private def isByName(fun: Tree): ((Int, Int) => Boolean) = {
     if (Boolean_ShortCircuits contains fun.symbol) (i, j) => true
     else {
-      val symtab = c.universe.asInstanceOf[reflect.internal.SymbolTable]
-      val paramss = fun.tpe.asInstanceOf[symtab.Type].paramss
+      val paramss = fun.tpe.paramss
       val byNamess = paramss.map(_.map(_.isByNameParam))
       (i, j) => util.Try(byNamess(i)(j)).getOrElse(false)
     }
   }
-  def argName(fun: Tree): ((Int, Int) => String) = {
-    val symtab = c.universe.asInstanceOf[reflect.internal.SymbolTable]
-    val paramss = fun.tpe.asInstanceOf[symtab.Type].paramss
+  private def argName(fun: Tree): ((Int, Int) => String) = {
+    val paramss = fun.tpe.paramss
     val namess = paramss.map(_.map(_.name.toString))
     (i, j) => util.Try(namess(i)(j)).getOrElse(s"arg_${i}_${j}")
   }
 
-  object Applied {
-    val symtab = c.universe.asInstanceOf[scala.reflect.internal.SymbolTable]
-    object treeInfo extends {
-      val global: symtab.type = symtab
-    } with reflect.internal.TreeInfo
+  def Expr[A: WeakTypeTag](t: Tree) = global.Expr[A](rootMirror, new reflect.api.TreeCreator {
+    def apply[U <: reflect.api.Universe with Singleton](m: reflect.api.Mirror[U]): U#Tree = t.asInstanceOf[U#Tree]
+  })
 
-    def unapply(tree: Tree): Some[(Tree, List[Tree], List[List[Tree]])] = {
-      val treeInfo.Applied(core, targs, argss) = tree.asInstanceOf[symtab.Tree]
-      Some((core.asInstanceOf[Tree], targs.asInstanceOf[List[Tree]], argss.asInstanceOf[List[List[Tree]]]))
-    }
-  }
-
-  def statsAndExpr(tree: Tree): (List[Tree], Tree) = tree match {
-    case Block(stats, expr) => (stats, expr)
-    case _                  => (List(tree), Literal(Constant(())))
-  }
-
-  def emptyConstructor: DefDef = {
-    val emptySuperCall = Apply(Select(Super(This(tpnme.EMPTY), tpnme.EMPTY), nme.CONSTRUCTOR), Nil)
-    DefDef(NoMods, nme.CONSTRUCTOR, List(), List(List()), TypeTree(), Block(List(emptySuperCall), c.literalUnit.tree))
-  }
-
-  def applied(className: String, types: List[Type]): AppliedTypeTree =
-    AppliedTypeTree(Ident(c.mirror.staticClass(className)), types.map(TypeTree(_)))
 
   object defn {
     def mkList_apply[A](args: List[Expr[A]]): Expr[List[A]] = {
-      c.Expr(Apply(Ident(definitions.List_apply), args.map(_.tree)))
+      Expr(Apply(Ident(definitions.List_apply), args.map(_.tree)))
     }
 
     def mkList_contains[A](self: Expr[List[A]])(elem: Expr[Any]) = reify(self.splice.contains(elem.splice))
@@ -155,35 +88,17 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
       self.splice.get
     }
 
-    val TryClass      = c.mirror.staticClass("scala.util.Try")
+    val TryClass      = rootMirror.staticClass("scala.util.Try")
     val Try_get       = TryClass.typeSignature.member(newTermName("get")).ensuring(_ != NoSymbol)
     val Try_isFailure = TryClass.typeSignature.member(newTermName("isFailure")).ensuring(_ != NoSymbol)
     val TryAnyType    = appliedType(TryClass.toType, List(definitions.AnyTpe))
-    val NonFatalClass = c.mirror.staticModule("scala.util.control.NonFatal")
-    val AsyncClass    = c.mirror.staticClass("scala.async.AsyncBase")
+    val NonFatalClass = rootMirror.staticModule("scala.util.control.NonFatal")
+    val AsyncClass    = rootMirror.staticClass("scala.async.AsyncBase")
     val Async_await   = AsyncClass.typeSignature.member(newTermName("await")).ensuring(_ != NoSymbol)
   }
 
-  /**
-   * Using [[scala.reflect.api.Trees.TreeCopier]] copies more than we would like:
-   * we don't want to copy types and symbols to the new trees in some cases.
-   *
-   * Instead, we just copy positions and attachments.
-   */
-  def attachCopy[T <: Tree](orig: Tree)(tree: T): tree.type = {
-    tree.setPos(orig.pos)
-    for (att <- orig.attachments.all)
-      tree.updateAttachment[Any](att)(ClassTag.apply[Any](att.getClass))
-    tree
-  }
-
   def isSafeToInline(tree: Tree) = {
-    val symtab = c.universe.asInstanceOf[scala.reflect.internal.SymbolTable]
-    object treeInfo extends {
-      val global: symtab.type = symtab
-    } with reflect.internal.TreeInfo
-    val castTree = tree.asInstanceOf[symtab.Tree]
-    treeInfo.isExprSafeToInline(castTree)
+    treeInfo.isExprSafeToInline(tree)
   }
 
   /** Map a list of arguments to:
@@ -228,5 +143,64 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
         (tree, j) => f(Arg(tree, isByNamess(i, j), argNamess(i, j)))
       }
     }.unzip
+  }
+
+
+  def statsAndExpr(tree: Tree): (List[Tree], Tree) = tree match {
+    case Block(stats, expr) => (stats, expr)
+    case _                  => (List(tree), Literal(Constant(())))
+  }
+
+  def emptyConstructor: DefDef = {
+    val emptySuperCall = Apply(Select(Super(This(tpnme.EMPTY), tpnme.EMPTY), nme.CONSTRUCTOR), Nil)
+    DefDef(NoMods, nme.CONSTRUCTOR, List(), List(List()), TypeTree(), Block(List(emptySuperCall), Literal(Constant(()))))
+  }
+
+  def applied(className: String, types: List[Type]): AppliedTypeTree =
+    AppliedTypeTree(Ident(rootMirror.staticClass(className)), types.map(TypeTree(_)))
+
+  /** Descends into the regions of the tree that are subject to the
+    * translation to a state machine by `async`. When a nested template,
+    * function, or by-name argument is encountered, the descent stops,
+    * and `nestedClass` etc are invoked.
+    */
+  trait AsyncTraverser extends Traverser {
+    def nestedClass(classDef: ClassDef) {
+    }
+
+    def nestedModule(module: ModuleDef) {
+    }
+
+    def nestedMethod(module: DefDef) {
+    }
+
+    def byNameArgument(arg: Tree) {
+    }
+
+    def function(function: Function) {
+    }
+
+    def patMatFunction(tree: Match) {
+    }
+
+    override def traverse(tree: Tree) {
+      tree match {
+        case cd: ClassDef          => nestedClass(cd)
+        case md: ModuleDef         => nestedModule(md)
+        case dd: DefDef            => nestedMethod(dd)
+        case fun: Function         => function(fun)
+        case m@Match(EmptyTree, _) => patMatFunction(m) // Pattern matching anonymous function under -Xoldpatmat of after `restorePatternMatchingFunctions`
+        case treeInfo.Applied(fun, targs, argss) if argss.nonEmpty =>
+          val isInByName = isByName(fun)
+          for ((args, i) <- argss.zipWithIndex) {
+            for ((arg, j) <- args.zipWithIndex) {
+              if (!isInByName(i, j)) traverse(arg)
+              else byNameArgument(arg)
+            }
+          }
+          traverse(fun)
+        case _                     => super.traverse(tree)
+      }
+    }
   }
 }

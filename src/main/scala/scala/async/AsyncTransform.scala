@@ -5,7 +5,11 @@ trait AsyncTransform {
 
   import global._
 
-  def asyncTransform[T](body: Tree, execContext: Tree)(implicit resultType: WeakTypeTag[T]): Tree = {
+  def asyncTransform[T](body: Tree, execContext: Tree, cpsFallbackEnabled: Boolean)
+                       (implicit resultType: WeakTypeTag[T]): Tree = {
+
+    reportUnsupportedAwaits(body, report = !cpsFallbackEnabled)
+
      // Transform to A-normal form:
     //  - no await calls in qualifiers or arguments,
     //  - if/match only used in statement position.
@@ -89,5 +93,4 @@ trait AsyncTransform {
     AsyncUtils.vprintln(s"ANF transform expands to:\n $anfTree")
     states foreach (s => AsyncUtils.vprintln(s))
   }
-
 }

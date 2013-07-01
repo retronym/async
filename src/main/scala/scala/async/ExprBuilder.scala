@@ -201,7 +201,7 @@ trait ExprBuilder {
     def checkForUnsupportedAwait(tree: Tree) = if (tree exists {
       case Apply(fun, _) if isAwait(fun) => true
       case _                             => false
-    }) c.reporter.error(tree.pos, "await must not be used in this position") //throw new FallbackToCpsException
+    }) abort(tree.pos, "await must not be used in this position") //throw new FallbackToCpsException
 
     def nestedBlockBuilder(nestedTree: Tree, startState: Int, endState: Int) = {
       val (nestedStats, nestedExpr) = statsAndExpr(nestedTree)

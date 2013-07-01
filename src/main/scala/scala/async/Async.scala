@@ -74,29 +74,12 @@ abstract class AsyncBase {
                                  (execContext: c.Expr[futureSystem.ExecContext]): c.Expr[futureSystem.Fut[T]] = {
     import c.universe._
 
-    val analyzer = AsyncAnalysis[c.type](c, this)
-    val utils = TransformUtils[c.type](c)
-    import utils.{name, defn}
-
-    analyzer.reportUnsupportedAwaits(body.tree)
-
-    def powerMode(c: Context) = {
-      c.asInstanceOf[c.type {val universe: Global; val callsiteTyper: universe.analyzer.Typer}]
-    }
-    val powerContext = powerMode(c)
-    val asyncMacro = new AsyncMacro {
-      val global       : powerContext.universe.type = powerContext.universe
-      val callSiteTyper: global.analyzer.Typer      = powerContext.callsiteTyper
-      val futureSystem: self.futureSystem.type = self.futureSystem
-      val futureSystemOps: futureSystem.Ops { val universe: global.type } = futureSystem.mkOps(global)
-    }
+    val asyncMacro = AsyncMacro(c, futureSystem)
 
     val code = asyncMacro.asyncTransform[T](
       body.tree.asInstanceOf[asyncMacro.global.Tree],
-      execContext.tree.asInstanceOf[asyncMacro.global.Tree]
-    )(
-      implicitly[c.WeakTypeTag[T]].asInstanceOf[asyncMacro.global.WeakTypeTag[T]]
-    )
+      execContext.tree.asInstanceOf[asyncMacro.global.Tree],
+      fallbackEnabled)(implicitly[c.WeakTypeTag[T]].asInstanceOf[asyncMacro.global.WeakTypeTag[T]])
 
     AsyncUtils.vprintln(s"async state machine transform expands to:\n ${code}")
     c.Expr[futureSystem.Fut[T]](code.asInstanceOf[Tree])

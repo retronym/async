@@ -7,16 +7,38 @@ package scala.async
 
 import scala.tools.nsc.Global
 import scala.tools.nsc.transform.TypingTransformers
+import scala.reflect.macros.runtime.AbortMacroException
 
-private[async] trait AsyncMacro extends TypingTransformers with AnfTransform with TransformUtils2 with Lifter with ExprBuilder with AsyncTransform {
-  val global: Global
+object AsyncMacro {
+  def apply(c: reflect.macros.Context, futureSystem0: FutureSystem): AsyncMacro = {
+    import language.reflectiveCalls
+    val powerContext = c.asInstanceOf[c.type {val universe: Global; val callsiteTyper: universe.analyzer.Typer}]
+    new AsyncMacro {
+      val global         : powerContext.universe.type                   = powerContext.universe
+      val callSiteTyper  : global.analyzer.Typer                        = powerContext.callsiteTyper
+      val futureSystem   : futureSystem0.type                           = futureSystem0
+      val futureSystemOps: futureSystem.Ops {val universe: global.type} = futureSystem0.mkOps(global)
+    }
+  }
+}
+
+private[async] trait AsyncMacro
+  extends TypingTransformers
+  with AnfTransform with TransformUtils with Lifter
+  with ExprBuilder with AsyncTransform with AsyncAnalysis {
+
+  val global       : Global
   val callSiteTyper: global.analyzer.Typer
 
   import global._
 
+  def abort(pos: Position, msg: String) = throw new AbortMacroException(pos, msg)
+
   abstract class MacroTypingTransformer extends TypingTransformer(callSiteTyper.context.unit) {
     currentOwner = callSiteTyper.context.owner
+
     def currOwner: Symbol = currentOwner
+
     localTyper = global.analyzer.newTyper(callSiteTyper.context.make(unit = callSiteTyper.context.unit))
   }
 
@@ -56,7 +78,7 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
     // This transform will be only be run on the RHS of `def foo`.
     class UseFields extends MacroTypingTransformer {
       override def transform(tree: Tree): Tree = tree match {
-        case _ if currentOwner == stateMachineClass =>
+        case _ if currentOwner == stateMachineClass          =>
           super.transform(tree)
         case ValDef(_, _, _, rhs) if liftedSyms(tree.symbol) =>
           atOwner(currentOwner) {
@@ -65,26 +87,27 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
             changeOwner(set, tree.symbol, currentOwner)
             localTyper.typedPos(tree.pos)(set)
           }
-        case _: DefTree if liftedSyms(tree.symbol) =>
+        case _: DefTree if liftedSyms(tree.symbol)           =>
           EmptyTree
-        case Ident(name) if liftedSyms(tree.symbol) =>
+        case Ident(name) if liftedSyms(tree.symbol)          =>
           val fieldSym = tree.symbol
           gen.mkAttributedStableRef(fieldSym.owner.thisType, fieldSym).setType(tree.tpe)
-        case _ =>
+        case _                                               =>
           super.transform(tree)
       }
     }
 
     val liftablesUseFields = liftables.map {
       case vd: ValDef => vd
-      case x =>
+      case x          =>
         val useField = new UseFields()
         //.substituteSymbols(fromSyms, toSyms)
         useField.atOwner(stateMachineClass)(useField.transform(x))
     }
 
-    tree.children.foreach { t =>
-      new ChangeOwnerAndModuleClassTraverser(callSiteTyper.context.owner, tree.symbol).traverse(t)
+    tree.children.foreach {
+      t =>
+        new ChangeOwnerAndModuleClassTraverser(callSiteTyper.context.owner, tree.symbol).traverse(t)
     }
     val treeSubst = tree
 
@@ -102,7 +125,7 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
     liftablesUseFields.foreach(t => if (t.symbol != null) stateMachineClass.info.decls.enter(t.symbol))
 
     val result0 = transformAt(treeSubst) {
-      case t @ Template(parents, self, stats) =>
+      case t@Template(parents, self, stats) =>
         (ctx: analyzer.Context) => {
           treeCopy.Template(t, parents, self, liftablesUseFields ++ stats)
         }
@@ -127,11 +150,12 @@ private[async] trait AsyncMacro extends TypingTransformers with AnfTransform wit
     override def traverse(tree: Tree) {
       tree match {
         case _: DefTree => change(tree.symbol.moduleClass)
-        case _ =>
+        case _          =>
       }
       super.traverse(tree)
     }
   }
+
 }
 
 private[async] trait AnfTransform extends TypingTransformers {
@@ -155,10 +179,12 @@ private[async] trait AnfTransform extends TypingTransformers {
 
   class SelectiveAnfTransform extends MacroTypingTransformer {
     var mode: AnfMode = Anf
+
     def blockToList(tree: Tree): List[Tree] = tree match {
       case Block(stats, expr) => stats :+ expr
       case t                  => t :: Nil
     }
+
     def listToBlock(trees: List[Tree]): Tree = trees match {
       case init :+ last => atPos(trees.head.pos)(Block(init, last).setType(last.tpe))
     }
@@ -176,9 +202,9 @@ private[async] trait AnfTransform extends TypingTransformers {
       tree match {
         case _: ValDef | _: DefDef | _: Function | _: ClassDef | _: TypeDef =>
           atOwner(tree.symbol)(anfLinearize)
-        case _: ModuleDef =>
+        case _: ModuleDef                                                   =>
           atOwner(tree.symbol.moduleClass orElse tree.symbol)(anfLinearize)
-        case _ => anfLinearize
+        case _                                                              => anfLinearize
       }
     }
 
@@ -192,7 +218,9 @@ private[async] trait AnfTransform extends TypingTransformers {
         indent += 1
         def oneLine(s: Any) = s.toString.replaceAll( """\n""", "\\\\n").take(127)
         try {
-          AsyncUtils.trace(s"${indentString}$prefix(${oneLine(args)})")
+          AsyncUtils.trace(s"${
+            indentString
+          }$prefix(${oneLine(args)})")
           val result = t
           AsyncUtils.trace(s"${indentString}= ${oneLine(result)}")
           result
@@ -203,7 +231,9 @@ private[async] trait AnfTransform extends TypingTransformers {
     }
 
     private object linearize {
-      def transformToList(tree: Tree): List[Tree] = { mode = Linearizing; blockToList(transform(tree)) }
+      def transformToList(tree: Tree): List[Tree] = {
+        mode = Linearizing; blockToList(transform(tree))
+      }
 
       def transformToList0(tree: Tree): List[Tree] = trace(tree) {
         val stats :+ expr = anf.transformToList(tree)
@@ -242,8 +272,8 @@ private[async] trait AnfTransform extends TypingTransformers {
               val casesWithAssign = cases map {
                 case cd@CaseDef(pat, guard, body) =>
                   val newBody = body match {
-                    case b @ Block(caseStats, caseExpr) => treeCopy.Block(b, caseStats, typedAssign(caseExpr))
-                    case _                              => typedAssign(body)
+                    case b@Block(caseStats, caseExpr) => treeCopy.Block(b, caseStats, typedAssign(caseExpr))
+                    case _                            => typedAssign(body)
                   }
                   treeCopy.CaseDef(cd, pat, guard, newBody)
               }
@@ -275,7 +305,9 @@ private[async] trait AnfTransform extends TypingTransformers {
     }
 
     private object anf {
-      def transformToList(tree: Tree): List[Tree] = {mode = Anf; blockToList(transform(tree))}
+      def transformToList(tree: Tree): List[Tree] = {
+        mode = Anf; blockToList(transform(tree))
+      }
 
       def transformToList0(tree: Tree): List[Tree] = trace(tree) {
         val containsAwait = tree exists isAwait
@@ -293,9 +325,9 @@ private[async] trait AnfTransform extends TypingTransformers {
             def isAwaitRef(name: Name) = name.toString.startsWith(AnfTransform.this.name.await + "$")
             val (argStatss, argExprss): (List[List[List[Tree]]], List[List[Tree]]) =
               mapArgumentss[List[Tree]](fun, argss) {
-                case Arg(expr, byName, _) if byName /*|| isPure(expr) TODO */    => (Nil, expr)
-                case Arg(expr@Ident(name), _, _) if isAwaitRef(name)        => (Nil, expr) // TODO needed? // not typed, so it eludes the check in `isSafeToInline`
-                case Arg(expr, _, argName)                                  =>
+                case Arg(expr, byName, _) if byName /*|| isPure(expr) TODO */ => (Nil, expr)
+                case Arg(expr@Ident(name), _, _) if isAwaitRef(name)          => (Nil, expr) // TODO needed? // not typed, so it eludes the check in `isSafeToInline`
+                case Arg(expr, _, argName)                                    =>
                   linearize.transformToList(expr) match {
                     case stats :+ expr1 =>
                       val valDef = defineVal(argName, expr1, expr1.pos)
@@ -310,7 +342,7 @@ private[async] trait AnfTransform extends TypingTransformers {
             val newApply = argExprss.foldLeft(core)(Apply(_, _)).setSymbol(tree.symbol)
             val typedNewApply = localTyper.typedPos(tree.pos)(newApply)
             funStats ++ argStatss.flatten.flatten :+ typedNewApply
-          case Block(stats, expr)                           =>
+          case Block(stats, expr)                                    =>
             linearize.transformToList(stats :+ expr)
 
           case ValDef(mods, name, tpt, rhs) =>
@@ -351,7 +383,7 @@ private[async] trait AnfTransform extends TypingTransformers {
                     (vd, (b.symbol, vd.symbol))
                 }).unzip
                 val (from, to) = mappings.unzip
-                val b @ Block(stats1, expr1) = block.substituteSymbols(from, to).asInstanceOf[Block]
+                val b@Block(stats1, expr1) = block.substituteSymbols(from, to).asInstanceOf[Block]
                 val newBlock = treeCopy.Block(b, valDefs ++ stats1, expr1)
                 treeCopy.CaseDef(tree, pat, guard, newBlock)
             }
