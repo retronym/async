@@ -15,7 +15,6 @@ trait ExprBuilder {
 
   import global._
 
-  val utils = this
   val c: global.type = global
 
   import defn._
@@ -290,7 +289,7 @@ trait ExprBuilder {
 
   case class SymLookup(stateMachineClass: Symbol, applyTrParam: Symbol)
 
-  def build(block: Block, symLookup: SymLookup): AsyncBlock = {
+  def buildAsyncBlock(block: Block, symLookup: SymLookup): AsyncBlock = {
     val Block(stats, expr) = block
     val startState = stateAssigner.nextState()
     val endState = Int.MaxValue

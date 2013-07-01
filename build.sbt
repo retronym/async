@@ -41,7 +41,7 @@ startYear := Some(2012)
 licenses +=("Scala license", url("https://github.com/scala/async/blob/master/LICENSE"))
 
 // Uncomment to disable test compilation.
-//(sources in Test) ~= ((xs: Seq[File]) => xs.filter(f => Seq("TreeInterrogation", "package").exists(f.name.contains)))
+// (sources in Test) ~= ((xs: Seq[File]) => xs.filter(f => Seq("TreeInterrogation", "package").exists(f.name.contains)))
 
 pomExtra := (
   <developers>

@@ -27,18 +27,23 @@ trait AsyncBaseWithCPSFallback extends AsyncBase {
                                                    (execContext: c.Expr[futureSystem.ExecContext]): c.Expr[futureSystem.Fut[T]] = {
     import c.universe._
 
-    def lookupMember(clazz: String, name: String) = {
+    def lookupClassMember(clazz: String, name: String) = {
       val asyncTrait = c.mirror.staticClass(clazz)
       val tpe = asyncTrait.asType.toType
-      tpe.member(newTermName(name)).ensuring(_ != NoSymbol)
+      tpe.member(newTermName(name)).ensuring(_ != NoSymbol, s"$clazz.$name")
+    }
+    def lookupObjectMember(clazz: String, name: String) = {
+      val moduleClass = c.mirror.staticModule(clazz).moduleClass
+      val tpe = moduleClass.asType.toType
+      tpe.member(newTermName(name)).ensuring(_ != NoSymbol, s"$clazz.$name")
     }
 
     AsyncUtils.vprintln("AsyncBaseWithCPSFallback.cpsBasedAsyncImpl")
 
     val symTab           = c.universe.asInstanceOf[reflect.internal.SymbolTable]
     val futureSystemOps  = futureSystem.mkOps(symTab)
-    val awaitSym         = lookupMember("scala.async.Async", "await")
-    val awaitFallbackSym = lookupMember("scala.async.continuations.AsyncBaseWithCPSFallback", "awaitFallback")
+    val awaitSym         = lookupObjectMember("scala.async.Async", "await")
+    val awaitFallbackSym = lookupClassMember("scala.async.continuations.AsyncBaseWithCPSFallback", "awaitFallback")
 
     // replace `await` invocations with `awaitFallback` invocations
     val awaitReplacer = new Transformer {
