@@ -128,10 +128,6 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
     case _                  => (List(tree), Literal(Constant(())))
   }
 
-  def mkVarDefTree(resultType: Type, resultName: TermName): c.Tree = {
-    ValDef(Modifiers(Flag.MUTABLE), resultName, TypeTree(resultType), defaultValue(resultType))
-  }
-
   def emptyConstructor: DefDef = {
     val emptySuperCall = Apply(Select(Super(This(tpnme.EMPTY), tpnme.EMPTY), nme.CONSTRUCTOR), Nil)
     DefDef(NoMods, nme.CONSTRUCTOR, List(), List(List()), TypeTree(), Block(List(emptySuperCall), c.literalUnit.tree))
@@ -159,28 +155,13 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
       self.splice.get
     }
 
-    val Try_get       = methodSym(reify((null: scala.util.Try[Any]).get))
-    val Try_isFailure = methodSym(reify((null: scala.util.Try[Any]).isFailure))
-
     val TryClass      = c.mirror.staticClass("scala.util.Try")
+    val Try_get       = TryClass.typeSignature.member(newTermName("get")).ensuring(_ != NoSymbol)
+    val Try_isFailure = TryClass.typeSignature.member(newTermName("isFailure")).ensuring(_ != NoSymbol)
     val TryAnyType    = appliedType(TryClass.toType, List(definitions.AnyTpe))
     val NonFatalClass = c.mirror.staticModule("scala.util.control.NonFatal")
-
-    private def asyncMember(name: String) = {
-      val asyncMod = c.mirror.staticClass("scala.async.AsyncBase")
-      val tpe = asyncMod.asType.toType
-      tpe.member(newTermName(name)).ensuring(_ != NoSymbol)
-    }
-
-    val Async_await = asyncMember("await")
-  }
-
-  /** `termSym( (_: Foo).bar(null: A, null: B)` will return the symbol of `bar`, after overload resolution. */
-  private def methodSym(apply: c.Expr[Any]): Symbol = {
-    val tree2: Tree = c.typeCheck(apply.tree)
-    tree2.collect {
-      case s: SymTree if s.symbol.isMethod => s.symbol
-    }.headOption.getOrElse(sys.error(s"Unable to find a method symbol in ${apply.tree}"))
+    val AsyncClass    = c.mirror.staticClass("scala.async.AsyncBase")
+    val Async_await   = AsyncClass.typeSignature.member(newTermName("await")).ensuring(_ != NoSymbol)
   }
 
   /**
