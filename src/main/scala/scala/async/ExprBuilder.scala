@@ -159,10 +159,7 @@ private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c:
       // 1. build list of changed cases
       val newCases = for ((cas, num) <- cases.zipWithIndex) yield cas match {
         case CaseDef(pat, guard, rhs) =>
-          val bindAssigns = rhs.children.takeWhile(isSyntheticBindVal).map {
-            case ValDef(_, name, _, rhs) => Assign(Ident(name), rhs)
-            case t                       => sys.error(s"Unexpected tree. Expected ValDef, found: $t")
-          }
+          val bindAssigns = rhs.children.takeWhile(isSyntheticBindVal)
           CaseDef(pat, guard, Block(bindAssigns :+ mkStateTree(caseStates(num)), mkResumeApply))
       }
       // 2. insert changed match tree at the end of the current state

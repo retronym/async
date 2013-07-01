@@ -71,16 +71,27 @@ object TreeInterrogation extends App {
     val tb = mkToolbox(s"-cp ${toolboxClasspath} -Xprint:typer")
     import scala.async.{Async, AsyncId}
 
-    val tree = tb.parse(
-      """
+    val code1 = """
+              | import scala.async.AsyncId._
+              | async {
+              |      case class Person(name: String)
+              |      val fut = "bob"
+              |      val x = Person(await(fut))
+              |      x.name
+              |    }
+              | """
+    val code2 =
+      """|
         | import scala.async.AsyncId._
         | async {
-        |      case class Person(name: String)
-        |      val fut = "bob"
-        |      val x = Person(await(fut))
-        |      x.name
+        |      Option("") match {
+        |        case op @ Some(x) =>
+        |          await(0)
+        |      }
         |    }
-        | """.stripMargin)
+      """.stripMargin
+    val tree = tb.parse(
+      code2.stripMargin)
     println(tree)
     val tree1 = tb.typeCheck(tree.duplicate)
     println(cm.universe.show(tree1))
