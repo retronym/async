@@ -25,12 +25,8 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
     val stateMachine  = newTermName(fresh("stateMachine"))
     val stateMachineT = stateMachine.toTypeName
     val apply         = newTermName("apply")
-    val applyOrElse   = newTermName("applyOrElse")
     val tr            = newTermName("tr")
     val t             = newTermName("throwable")
-    val matchRes      = "matchres"
-    val ifRes         = "ifres"
-    val await         = "await"
     val bindSuffix    = "$bind"
 
     def fresh(name: TermName): TermName = newTermName(fresh(name.toString))
@@ -45,11 +41,6 @@ private[async] final case class TransformUtils[C <: Context](c: C) {
 
   def isAwait(fun: Tree) =
     fun.symbol == defn.Async_await
-
-  /** Replace all `Ident` nodes referring to one of the keys n `renameMap` with a node
-    * referring to the corresponding new name
-    */
-  def substituteNames(tree: Tree, renameMap: Map[Symbol, Symbol]): Tree = tree
 
   /** Descends into the regions of the tree that are subject to the
     * translation to a state machine by `async`. When a nested template,
