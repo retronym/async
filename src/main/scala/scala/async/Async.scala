@@ -129,118 +129,15 @@ abstract class AsyncBase {
 
     logDiagnostics(c)(anfTree, asyncBlock.asyncStates.map(_.toString))
 
-    val companions = collection.mutable.Map[Symbol, Symbol]()
-    val defs0: Map[Tree, Int] = asyncBlock.asyncStates.flatMap {
-      asyncState =>
-        val awaits = asyncState match {
-          case stateWithAwait: builder.AsyncStateWithAwait =>
-            stateWithAwait.awaitable.resultValDef :: Nil
-          case _ => Seq()
-        }
-        def collectDirectDefs(t: Tree): List[DefTree] = t match {
-          case dt: DefTree => dt :: Nil
-          case _: Function => Nil
-          case t           =>
-            val childDefs = t.children.flatMap(collectDirectDefs(_))
-            val comps = for {
-              cd @ ClassDef(_, _, _, _) <- childDefs
-              md @ ModuleDef(_, _, _) <- childDefs
-              if (cd.name.toTermName == md.name)
-            } yield (cd.symbol, md.symbol)
-            comps foreach (companions += _)
-            childDefs
-        }
-        val defs = collectDirectDefs(Block(asyncState.stats: _*))
-        (awaits ++ defs).map((_, asyncState.state))
-    }.toMap
-
-    // In which block are these symbols defined?
-    val defMap: Map[Symbol, Int] = defs0.map { case (k, v) => (k.symbol, v) }
-
-    // The definitions trees
-    val defTrees: Map[Symbol, Tree] = defs0.map { case (k, v) => (k.symbol, k) }
-
-    // The direct references of each definition tree
-    val defRefs: List[(Symbol, List[Symbol])] = defs0.keys.map {
-      case tree => (tree.symbol, tree.collect { case rt: RefTree if defMap.contains(rt.symbol) => rt.symbol })
-    }.toList
-    val defRefsMap = defRefs.toMap
-
-    // The direct references of each block
-    val statementRefs: Map[Int, List[Symbol]] = asyncBlock.asyncStates.flatMap (
-      asyncState => asyncState.stats.filterNot(_.isDef).flatMap (_.collect {
-        case rt: RefTree if defMap.contains(rt.symbol) => (rt.symbol, asyncState.state)
-      })
-    ).groupBy(_._2).mapValues(_.map(_._1))
-
-    val liftables = collection.mutable.Set[Symbol]()
-    def markForLift(sym: Symbol) {
-      if (!liftables(sym)) {
-        liftables += sym
-        val isValOrVar = sym.isTerm && (sym.asTerm.isVal || sym.asTerm.isVar)
-        if (!isValOrVar)
-          defRefsMap(sym).foreach(sym2 => markForLift(sym2))
-      }
-    }
-    val liftableStatementRefs: List[Symbol] = statementRefs.toList.flatMap {
-      case (i, syms) => syms.filter(sym => defMap(sym) != i)
-    }
-    val liftableRefsOfDefTrees = defRefs.toList.flatMap {
-      case (referee, referents) => referents.filter(sym => defMap(sym) != defMap(referee))
-    }
-    (liftableStatementRefs ++ liftableRefsOfDefTrees).foreach(markForLift)
-
-    val lifted = liftables.map(defTrees).toList.map {
-      case vd@ValDef(_, _, tpt, rhs) =>
-        import reflect.internal.Flags._
-        val sym = vd.symbol.asInstanceOf[asyncMacro.global.Symbol]
-        sym.setFlag(MUTABLE | STABLE | PRIVATE | LOCAL)
-        sym.name = asyncMacro.name.fresh(sym.name.toTermName)
-        sym.modifyInfo(_.deconst)
-        ValDef(vd.symbol, asyncMacro.global.gen.mkZero(vd.symbol.typeSignature.asInstanceOf[asyncMacro.global.Type]).asInstanceOf[Tree]).setPos(vd.pos)
-      case dd@DefDef(mods, name, tparams, vparamss, tpt, rhs) =>
-        import reflect.internal.Flags._
-        val sym = dd.symbol.asInstanceOf[asyncMacro.global.Symbol]
-        sym.name = asyncMacro.name.fresh(sym.name.toTermName)
-        sym.setFlag(PRIVATE | LOCAL)
-        DefDef(dd.symbol, rhs).setPos(dd.pos)
-      case cd @ ClassDef(_, _, _, impl) =>
-        import reflect.internal.Flags._
-        val sym = cd.symbol.asInstanceOf[asyncMacro.global.Symbol]
-        sym.name = asyncMacro.global.newTypeName(asyncMacro.name.fresh(sym.name.toString).toString)
-        companions.toMap.get(cd.symbol) match {
-          case Some(moduleSymbol0) =>
-            val moduleSymbol = moduleSymbol0.asInstanceOf[asyncMacro.global.Symbol]
-            moduleSymbol.name = sym.name.toTermName
-            moduleSymbol.moduleClass.name = moduleSymbol.name.toTypeName
-          case _ =>
-        }
-        //sym.resetFlag(PRIVATE | LOCAL)
-        ClassDef(cd.symbol, impl).setPos(cd.pos)
-      case md @ ModuleDef(_, _, impl) =>
-        import reflect.internal.Flags._
-        val sym = md.symbol.asInstanceOf[asyncMacro.global.Symbol]
-        companions.map(_.swap).toMap.get(md.symbol) match {
-          case Some(classSymbol) => // let the case above rename consistently
-          case _ =>
-            sym.name = asyncMacro.name.fresh(sym.name.toTermName)
-            sym.moduleClass.name = sym.name.toTypeName
-        }
-        //sym.resetFlag(PRIVATE | LOCAL)
-        ModuleDef(md.symbol, impl).setPos(md.pos)
-      case td @ TypeDef(_, _, _, rhs) =>
-        import reflect.internal.Flags._
-        val sym = td.symbol.asInstanceOf[asyncMacro.global.Symbol]
-        sym.name = asyncMacro.global.newTypeName(asyncMacro.name.fresh(sym.name.toString).toString)
-        TypeDef(td.symbol, rhs).setPos(td.pos)
-    }
-
-    val applyBody = asyncBlock.onCompleteHandler
-    val resumeFunTree = asyncBlock.resumeFunTree[T]
     def castTree(t: Tree) = t.asInstanceOf[asyncMacro.global.Tree]
     def uncastTree(t: asyncMacro.global.Tree): Tree = t.asInstanceOf[Tree]
 
-    lazy val stateMachineFixedUp = uncastTree(asyncMacro.spliceMethodBodies(lifted.asInstanceOf[List[asyncMacro.global.Tree]], castTree(stateMachine), castTree(applyBody), castTree(resumeFunTree.rhs)))
+    lazy val stateMachineFixedUp = uncastTree(
+      asyncMacro.lift(
+        asyncBlock.asyncStates,
+        castTree(stateMachine),
+        castTree(asyncBlock.onCompleteHandler),
+        castTree(asyncBlock.resumeFunTree[T].rhs)))
 
     def selectStateMachine(selection: TermName) = Select(Ident(name.stateMachine), selection)
 

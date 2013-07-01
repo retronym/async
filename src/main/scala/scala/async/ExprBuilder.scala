@@ -8,7 +8,7 @@ import scala.collection.mutable.ListBuffer
 import collection.mutable
 import language.existentials
 
-private[async] final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSystem: FS, origTree: C#Tree) {
+final case class ExprBuilder[C <: Context, FS <: FutureSystem](c: C, futureSystem: FS, origTree: C#Tree) {
   builder =>
 
   val utils = TransformUtils[c.type](c)

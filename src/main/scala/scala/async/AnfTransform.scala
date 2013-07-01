@@ -8,7 +8,7 @@ package scala.async
 import scala.tools.nsc.Global
 import scala.tools.nsc.transform.TypingTransformers
 
-private[async] trait AsyncMacro extends TypingTransformers with AnfTransform with TransformUtils2 {
+private[async] trait AsyncMacro extends TypingTransformers with AnfTransform with TransformUtils2 with Lifter {
   val global: Global
   val callSiteTyper: global.analyzer.Typer
 
