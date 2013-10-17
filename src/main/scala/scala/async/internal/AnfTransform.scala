@@ -70,6 +70,27 @@ private[async] trait AnfTransform {
         val stats :+ expr = anf.transformToList(tree)
         def statsExprUnit =
           stats :+ expr :+ localTyper.typedPos(expr.pos)(Literal(Constant(())))
+        def branchWithAssign(orig: Tree, varDef: ValDef) = localTyper.typedPos(orig.pos) {
+          def cast(t: Tree) = mkAttributedCastPreservingAnnotations(t, varDef.symbol.tpe)
+          orig match {
+            case Block(thenStats, thenExpr) => Block(thenStats, Assign(Ident(varDef.symbol), cast(thenExpr)))
+            case _                          => Assign(Ident(varDef.symbol), cast(orig))
+          }
+        }
+        def casesWithAssign(cases: List[CaseDef], varDef: ValDef) = {
+          def typedAssign(lhs: Tree) =
+            localTyper.typedPos(lhs.pos)(Assign(Ident(varDef.symbol), mkAttributedCastPreservingAnnotations(lhs, varDef.symbol.tpe)))
+
+          cases map {
+            case cd@CaseDef(pat, guard, body) =>
+              val newBody = body match {
+                case b@Block(caseStats, caseExpr) => treeCopy.Block(b, caseStats, typedAssign(caseExpr)).setType(definitions.UnitTpe)
+                case _                            => typedAssign(body)
+              }
+              treeCopy.CaseDef(cd, pat, guard, newBody).setType(definitions.UnitTpe)
+          }
+        }
+
         expr match {
           // if type of if-else/try/match is Unit don't introduce assignment,
           // but add Unit value to bring it into form expected by async transform
@@ -80,34 +101,16 @@ private[async] trait AnfTransform {
           case Apply(fun, args) if isAwait(fun) =>
             val valDef = defineVal(name.await, expr, tree.pos)
             stats :+ valDef :+ gen.mkAttributedStableRef(valDef.symbol).setType(tree.tpe).setPos(tree.pos)
-
           case If(cond, thenp, elsep) =>
             // if type of if-else is Unit don't introduce assignment,
             // but add Unit value to bring it into form expected by async transform
             val varDef = defineVar(name.ifRes, expr.tpe, tree.pos)
-            def branchWithAssign(orig: Tree) = localTyper.typedPos(orig.pos) {
-              def cast(t: Tree) = mkAttributedCastPreservingAnnotations(t, varDef.symbol.tpe)
-              orig match {
-                case Block(thenStats, thenExpr) => Block(thenStats, Assign(Ident(varDef.symbol), cast(thenExpr)))
-                case _                          => Assign(Ident(varDef.symbol), cast(orig))
-              }
-            }
-            val ifWithAssign = treeCopy.If(tree, cond, branchWithAssign(thenp), branchWithAssign(elsep)).setType(definitions.UnitTpe)
+            val ifWithAssign = treeCopy.If(tree, cond, branchWithAssign(thenp, varDef),
+                                                       branchWithAssign(elsep, varDef)).setType(definitions.UnitTpe)
             stats :+ varDef :+ ifWithAssign :+ gen.mkAttributedStableRef(varDef.symbol).setType(tree.tpe).setPos(tree.pos)
-
           case Match(scrut, cases) =>
             val varDef = defineVar(name.matchRes, expr.tpe, tree.pos)
-            def typedAssign(lhs: Tree) =
-              localTyper.typedPos(lhs.pos)(Assign(Ident(varDef.symbol), mkAttributedCastPreservingAnnotations(lhs, varDef.symbol.tpe)))
-            val casesWithAssign = cases map {
-              case cd@CaseDef(pat, guard, body) =>
-                val newBody = body match {
-                  case b@Block(caseStats, caseExpr) => treeCopy.Block(b, caseStats, typedAssign(caseExpr)).setType(definitions.UnitTpe)
-                  case _                            => typedAssign(body)
-                }
-                treeCopy.CaseDef(cd, pat, guard, newBody).setType(definitions.UnitTpe)
-            }
-            val matchWithAssign = treeCopy.Match(tree, scrut, casesWithAssign).setType(definitions.UnitTpe)
+            val matchWithAssign = treeCopy.Match(tree, scrut, casesWithAssign(cases, varDef)).setType(definitions.UnitTpe)
             require(matchWithAssign.tpe != null, matchWithAssign)
             stats :+ varDef :+ matchWithAssign :+ gen.mkAttributedStableRef(varDef.symbol).setPos(tree.pos).setType(tree.tpe)
           case _                   =>
