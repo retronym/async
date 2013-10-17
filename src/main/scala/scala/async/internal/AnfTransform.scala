@@ -113,6 +113,10 @@ private[async] trait AnfTransform {
             val matchWithAssign = treeCopy.Match(tree, scrut, casesWithAssign(cases, varDef)).setType(definitions.UnitTpe)
             require(matchWithAssign.tpe != null, matchWithAssign)
             stats :+ varDef :+ matchWithAssign :+ gen.mkAttributedStableRef(varDef.symbol).setPos(tree.pos).setType(tree.tpe)
+          case Try(body, catches, finalizer) =>
+            val varDef = defineVar(name.tryRes, expr.tpe, tree.pos)
+            val tryWithAssign = Try(branchWithAssign(body, varDef), casesWithAssign(catches, varDef), finalizer)
+            stats :+ varDef :+ tryWithAssign :+ gen.mkAttributedStableRef(varDef.symbol).setPos(tree.pos).setType(tree.tpe)
           case _                   =>
             stats :+ expr
         }
@@ -242,6 +246,12 @@ private[async] trait AnfTransform {
                 treeCopy.CaseDef(tree, pat, guard, newBlock)
             }
             scrutStats :+ treeCopy.Match(tree, scrutExpr, caseDefs)
+
+          case Try(body, catches, finalizer) if containsAwait =>
+            val bodyBlock = linearize.transformToBlock(body)
+            val finBlock = if (!finalizer.isEmpty) linearize.transformToBlock(finalizer) else finalizer
+            // no transform for catches as we don't currently support `await` in that position.
+            List(treeCopy.Try(tree, bodyBlock, catches, finBlock))
 
           case LabelDef(name, params, rhs) =>
             List(LabelDef(name, params, Block(linearize.transformToList(rhs), Literal(Constant(())))).setSymbol(tree.symbol))

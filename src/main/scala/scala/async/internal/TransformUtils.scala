@@ -20,6 +20,7 @@ private[async] trait TransformUtils {
     val apply         = newTermName("apply")
     val matchRes      = "matchres"
     val ifRes         = "ifres"
+    val tryRes        = "tryres"
     val await         = "await"
     val bindSuffix    = "$bind"
 
