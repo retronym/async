@@ -55,9 +55,13 @@ trait AsyncAnalysis {
     override def traverse(tree: Tree) {
       def containsAwait = tree exists isAwait
       tree match {
-        case Try(_, _, _) if containsAwait                    =>
-          reportUnsupportedAwait(tree, "try/catch")
-          super.traverse(tree)
+        case Try(body, catches, finalizer) if containsAwait  =>
+          if (body exists isAwait)
+            reportUnsupportedAwait(tree, "try body")
+          else if (catches.exists(_ exists isAwait))
+            reportUnsupportedAwait(tree, "catch")
+          else if (finalizer.exists(isAwait))
+            reportUnsupportedAwait(tree, "finalizer")
         case Return(_)                                        =>
           abort(tree.pos, "return is illegal within a async block")
         case ValDef(mods, _, _, _) if mods.hasFlag(Flag.LAZY) =>
