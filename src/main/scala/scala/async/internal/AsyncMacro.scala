@@ -26,6 +26,8 @@ private[async] trait AsyncMacro
   val callSiteTyper: global.analyzer.Typer
   val macroApplication: global.Tree
 
+  def supportTryCatch: Boolean = false
+
   lazy val macroPos = macroApplication.pos.makeTransparent
   def atMacroPos(t: global.Tree) = global.atPos(macroPos)(t)
 

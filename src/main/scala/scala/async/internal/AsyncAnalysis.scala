@@ -56,11 +56,11 @@ trait AsyncAnalysis {
       def containsAwait = tree exists isAwait
       tree match {
         case Try(body, catches, finalizer) if containsAwait  =>
-          if (body exists isAwait)
+          if (!supportTryCatch && (body exists isAwait))
             reportUnsupportedAwait(tree, "try body")
           else if (catches.exists(_ exists isAwait))
             reportUnsupportedAwait(tree, "catch")
-          else if (finalizer.exists(isAwait))
+          else if (!supportTryCatch && finalizer.exists(isAwait))
             reportUnsupportedAwait(tree, "finalizer")
         case Return(_)                                        =>
           abort(tree.pos, "return is illegal within a async block")
