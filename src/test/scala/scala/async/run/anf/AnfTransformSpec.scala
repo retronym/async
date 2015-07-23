@@ -405,4 +405,15 @@ class AnfTransformSpec {
     val applyImplicitView = tree.collect { case x if x.getClass.getName.endsWith("ApplyImplicitView") => x }
     applyImplicitView.map(_.toString) mustStartWith List("view(a$macro$")
   }
+
+  @Test
+  def awaitInPatternGuard(): Unit = {
+    val result: Boolean = AsyncId.async {
+      (null: Any) match {
+        case _ if AsyncId.await(false) => false
+        case _ if AsyncId.await(true) => true
+      }
+    }
+    assert(result)
+  }
 }

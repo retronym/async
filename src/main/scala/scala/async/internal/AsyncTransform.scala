@@ -22,9 +22,43 @@ trait AsyncTransform {
     // Transform to A-normal form:
     //  - no await calls in qualifiers or arguments,
     //  - if/match only used in statement position.
-    val anfTree0: Block = anfTransform(body)
+    val anfTree0: Block = anfTransform(body, c.internal.enclosingOwner)
 
     val anfTree = futureSystemOps.postAnfTransform(anfTree0)
+
+    val anfTreeNoAwaitInGuards: Block = typingTransform(anfTree) { (tree, api) =>
+      tree match {
+        case Match(scrut, cases) =>
+          val shouldTransform = cases exists (_.guard.exists(isAwait))
+          if (shouldTransform) {
+            val scrut1 = api.currentOwner.newTermSymbol(TermName(c.freshName("srut$"))).setInfo(scrut.tpe)
+            val matched = api.currentOwner.newTermSymbol(TermName(c.freshName("matched$"))).setInfo(definitions.BooleanTpe)
+            import compat._
+            val scrut1ValDef = ValDef(scrut1, api.recur(scrut)) // TODO unwrap @switch / @unchecked annotations
+            val matchedValDef = ValDef(matched, Literal(Constant(false)))
+            val matches = cases map { cd =>
+              val newBody = api.typecheck(If(cd.guard, api.recur(cd.body), Literal(Constant(()))))
+              api.typecheck(Match(gen.mkAttributedIdent(scrut1),
+                CaseDef(Ident(nme.WILDCARD), gen.mkAttributedIdent(matched), EmptyTree) ::
+                  treeCopy.CaseDef(cd, cd.pat, EmptyTree, anfTransform(newBody, api.currentOwner)) :: Nil
+              ))
+            }
+
+            api.typecheck(Block(matchedValDef :: scrut1ValDef :: matches : _*))
+          } else api.default(tree)
+        case Block(stats, expr) =>
+          val stats1 = stats flatMap {
+            stat =>
+              api.recur(stat) match {
+                case Block(nestedStats, nestedExpr) =>
+                  nestedStats :+ nestedExpr
+                case x => x :: Nil
+              }
+          }
+          treeCopy.Block(tree, stats1, api.recur(expr))
+        case _ => api.default(tree)
+      }
+    }.asInstanceOf[Block]
 
     val applyDefDefDummyBody: DefDef = {
       val applyVParamss = List(List(ValDef(Modifiers(Flag.PARAM), name.tr, TypeTree(futureSystemOps.tryType[Any]), EmptyTree)))
@@ -56,10 +90,10 @@ trait AsyncTransform {
     val stateMachineClass = stateMachine.symbol
     val asyncBlock: AsyncBlock = {
       val symLookup = new SymLookup(stateMachineClass, applyDefDefDummyBody.vparamss.head.head.symbol)
-      buildAsyncBlock(anfTree, symLookup)
+      buildAsyncBlock(anfTreeNoAwaitInGuards, symLookup)
     }
 
-    logDiagnostics(anfTree, asyncBlock.asyncStates.map(_.toString))
+    logDiagnostics(anfTreeNoAwaitInGuards, asyncBlock.asyncStates.map(_.toString))
 
     val liftedFields: List[Tree] = liftables(asyncBlock.asyncStates)
 

@@ -16,7 +16,7 @@ private[async] trait AnfTransform {
   import c.internal._
   import decorators._
 
-  def anfTransform(tree: Tree): Block = {
+  def anfTransform(tree: Tree, owner: Symbol): Block = {
     // Must prepend the () for issue #31.
     val block = c.typecheck(atPos(tree.pos)(Block(List(Literal(Constant(()))), tree))).setType(tree.tpe)
 
@@ -25,7 +25,7 @@ private[async] trait AnfTransform {
     case object Linearizing extends AnfMode
 
     var mode: AnfMode = Anf
-    typingTransform(block)((tree, api) => {
+    typingTransform(block, owner)((tree, api) => {
       def blockToList(tree: Tree): List[Tree] = tree match {
         case Block(stats, expr) => stats :+ expr
         case t                  => t :: Nil
