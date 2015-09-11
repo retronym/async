@@ -24,7 +24,7 @@ parallelExecution in Global := false
 
 scalacOptions in compile ++= Seq("-optimize", "-deprecation", "-unchecked", "-Xlint", "-feature")
 
-scalacOptions in Test ++= Seq("-Yrangepos")
+scalacOptions in Test ++= Seq("-Yrangepos", "-Ywarn-dead-code")
 
 // Generate $name.properties to store our version as well as the scala version used to build
 resourceGenerators in Compile <+= Def.task {

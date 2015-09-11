@@ -53,3 +53,29 @@ object Async {
   @compileTimeOnly("`await` must be enclosed in an `async` block")
   def await[T](awaitable: Future[T]): T = ??? // No implementation here, as calls to this are translated to `onComplete` by the macro.
 }
+
+import scala.reflect.macros.blackbox.Context
+import language.experimental._
+object M {
+  def impl(c: Context)(a: c.Expr[Any]): c.Expr[Any] = c.universe.reify {
+    if ("".isEmpty)
+      (() => {
+        c.Expr[Any](c.untypecheck(a.tree)).splice
+      })()
+    else ???
+  }
+  def apply(a: => Any) = macro impl
+}
+
+object N {
+  def impl(c: Context)(a: c.Expr[Any]): c.Expr[Any] = c.universe.reify {
+    if ("".isEmpty)
+      c.Expr[Any](c.untypecheck(a.tree)).splice
+    else ???
+  }
+  def apply(a: Any) = macro impl
+}
+
+object Lazy {
+  def apply(a: =>Any) {a}
+}

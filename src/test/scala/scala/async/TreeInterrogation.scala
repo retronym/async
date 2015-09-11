@@ -65,23 +65,88 @@ object TreeInterrogation extends App {
 
   withDebug {
     val cm = reflect.runtime.currentMirror
-    val tb = mkToolbox(s"-cp ${toolboxClasspath} -Xprint:typer -uniqid")
+    val tb = mkToolbox(s"-cp ${toolboxClasspath}")
     import scala.async.internal.AsyncId._
     val tree = tb.parse(
       """
-        | import scala.async.internal.AsyncId._
-        | async {
-        |   var b = true
-        |   while(await(b)) {
-        |     b = false
-        |   }
-        |   await(b)
-        | }
-        |
+        | import scala.async.Async._, scala.concurrent._, ExecutionContext.Implicits.global, scala.concurrent.duration.Duration.Inf
+        | val e = new Exception()
+        | def f = Future(1)
+        | val result = async {
+        |    await(f) + await(f)
+        |  }
+        | Await.result(result, Inf)
         | """.stripMargin)
     println(tree)
     val tree1 = tb.typeCheck(tree.duplicate)
     println(cm.universe.show(tree1))
     println(tb.eval(tree))
+  }
+}
+
+
+object Main {
+  def main(args: Array[String]) {
+    println("here")
+    M {
+      println("1")
+      println("2")
+    }
+    N {
+      println("1")
+      println("2")
+    }
+    Lazy{
+      println("1")
+      println("2")
+    }
+    (new T {}).apply
+    new C().apply
+  }
+}
+
+trait T {
+  def apply {
+    println("here")
+    M {
+      println("1")
+      M apply {
+        println("2")
+        println("2")
+      }
+    }
+    N {
+      println("2")
+      N {
+        println("1")
+        println("1")
+      }
+    }
+    Lazy {
+      println("2")
+      println("2")
+    }
+  }
+}
+
+class C {
+  def apply {
+    println("here")
+    M {
+      println("1")
+      M {
+        println("2")
+      }
+    }
+    N {
+      println("1")
+      N {
+        println("2")
+      }
+    }
+    Lazy {
+      println("2")
+      println("xxx")
+    }
   }
 }

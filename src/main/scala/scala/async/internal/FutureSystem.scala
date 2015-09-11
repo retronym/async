@@ -55,6 +55,12 @@ trait FutureSystem {
 
     /** Complete a promise with a value */
     def completeProm[A](prom: Expr[Prom[A]], value: Expr[Tryy[A]]): Expr[Unit]
+    final def completePromIfNotNothing[A: WeakTypeTag](prom: Expr[Prom[A]], value: Expr[Tryy[A]]): Expr[Any] = {
+      if (weakTypeOf[A] =:= definitions.NothingTpe)
+        c.Expr(Typed(tryyGet(value).tree, TypeTree(definitions.AnyTpe)))
+      else completeProm(prom, value)
+
+    }
 
     def spawn(tree: Tree, execContext: Tree): Tree =
       future(c.Expr[Unit](tree))(c.Expr[ExecContext](execContext)).tree

@@ -105,11 +105,16 @@ trait ExprBuilder {
       mkHandlerCase(state, stats ++ List(mkStateTree(onCompleteState, symLookup), tryGetOrCallOnComplete))
     }
 
-    private def tryGetTree(tryReference: => Tree) =
-      Assign(
-        Ident(awaitable.resultName),
-        TypeApply(Select(futureSystemOps.tryyGet[Any](c.Expr[futureSystem.Tryy[Any]](tryReference)).tree, newTermName("asInstanceOf")), List(TypeTree(awaitable.resultType)))
-      )
+    private def tryGetTree(tryReference: => Tree) = {
+      val tryGet = TypeApply(Select(futureSystemOps.tryyGet[Any](c.Expr[futureSystem.Tryy[Any]](tryReference)).tree, newTermName("asInstanceOf")), List(TypeTree(awaitable.resultType)))
+      if (awaitable.resultName == NoSymbol)
+        tryGet
+      else
+        Assign(
+          Ident(awaitable.resultName),
+          tryGet
+        )
+    }
 
     /* if (tr.isFailure)
      *   result.complete(tr.asInstanceOf[Try[T]])
@@ -121,7 +126,7 @@ trait ExprBuilder {
      */
     def ifIsFailureTree[T: WeakTypeTag](tryReference: => Tree) =
       If(futureSystemOps.tryyIsFailure(c.Expr[futureSystem.Tryy[T]](tryReference)).tree,
-        Block(toList(futureSystemOps.completeProm[T](
+        Block(toList(futureSystemOps.completePromIfNotNothing[T](
           c.Expr[futureSystem.Prom[T]](symLookup.memberRef(name.result)),
           c.Expr[futureSystem.Tryy[T]](
             TypeApply(Select(tryReference, newTermName("asInstanceOf")),
@@ -254,6 +259,13 @@ trait ExprBuilder {
         asyncStates += stateBuilder.resultWithAwait(awaitable, onCompleteState, afterAwaitState) // complete with await
         currState = afterAwaitState
         stateBuilder = new AsyncStateBuilder(currState, symLookup)
+      case Apply(fun, arg :: Nil) if isAwait(fun) && stat.tpe =:= definitions.NothingTpe =>
+        val onCompleteState = nextState()
+        val afterAwaitState = nextState()
+        val awaitable = Awaitable(arg, NoSymbol, stat.tpe, noSelfType)
+        asyncStates += stateBuilder.resultWithAwait(awaitable, onCompleteState, afterAwaitState) // complete with await
+        currState = afterAwaitState
+        stateBuilder = new AsyncStateBuilder(currState, symLookup)
 
       case If(cond, thenp, elsep) if (stat exists isAwait) || containsForiegnLabelJump(stat) =>
         checkForUnsupportedAwait(cond)
@@ -349,9 +361,13 @@ trait ExprBuilder {
         val caseForLastState: CaseDef = {
           val lastState = asyncStates.last
           val lastStateBody = c.Expr[T](lastState.body)
-          val rhs = futureSystemOps.completeProm(
-            c.Expr[futureSystem.Prom[T]](symLookup.memberRef(name.result)), futureSystemOps.tryySuccess[T](lastStateBody))
-          mkHandlerCase(lastState.state, Block(rhs.tree, Return(literalUnit)))
+          if (weakTypeOf[T] =:= definitions.NothingTpe)
+            mkHandlerCase(lastState.state, lastStateBody.tree)
+          else {
+            val rhs = futureSystemOps.completePromIfNotNothing(
+              c.Expr[futureSystem.Prom[T]](symLookup.memberRef(name.result)), futureSystemOps.tryySuccess[T](c.Expr[T](Typed(lastStateBody.tree, TypeTree(weakTypeOf[T])))))
+            mkHandlerCase(lastState.state, Block(rhs.tree, Return(literalUnit)))
+          }
         }
         asyncStates.toList match {
           case s :: Nil =>
@@ -391,7 +407,7 @@ trait ExprBuilder {
                 Bind(name.t, Ident(nme.WILDCARD)),
                 Apply(Ident(defn.NonFatalClass), List(Ident(name.t))), {
                   val t = c.Expr[Throwable](Ident(name.t))
-                  val complete = futureSystemOps.completeProm[T](
+                  val complete = futureSystemOps.completePromIfNotNothing[T](
                     c.Expr[futureSystem.Prom[T]](symLookup.memberRef(name.result)), futureSystemOps.tryyFailure[T](t)).tree
                   Block(toList(complete), Return(literalUnit))
                 })), EmptyTree)
@@ -438,6 +454,9 @@ trait ExprBuilder {
   private def tpeOf(t: Tree): Type = t match {
     case _ if t.tpe != null => t.tpe
     case Try(body, Nil, _) => tpeOf(body)
+    case Block(_, expr) => tpeOf(expr)
+    case Return(expr) => tpeOf(expr)
+    case Literal(Constant(_: Unit)) => definitions.UnitTpe
     case _ => NoType
   }
 

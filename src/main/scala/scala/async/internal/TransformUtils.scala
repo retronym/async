@@ -109,6 +109,17 @@ private[async] trait TransformUtils {
     def unapply(tree: Tree): Option[(Tree, List[Tree], List[List[Tree]])] =
       unapply(dissectApplied(tree))
   }
+  object Application {
+    def unapply(t: Tree): Option[Application] = t match {
+      case _: Apply | _: TypeApply => Some(new Application(t))
+    }
+  }
+  object Applied1Test {
+    def transform(t: Tree) = t match {
+      case ap @ Application(tree) if tree.toString.contains("foo") =>
+        ap.
+    }
+  }
   private lazy val Boolean_ShortCircuits: Set[Symbol] = {
     import definitions.BooleanClass
     def BooleanTermMember(name: String) = BooleanClass.typeSignature.member(newTermName(name).encodedName)
