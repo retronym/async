@@ -27,6 +27,27 @@ private[async] trait AnfTransform {
     val tree1 = adjustTypeOfTranslatedPatternMatches(block, owner)
 
     var mode: AnfMode = Anf
+
+    object trace {
+      private var indent = -1
+
+      private def indentString = "  " * indent
+
+      def apply[T](args: Any)(t: => T): T = {
+        def prefix = mode.toString.toLowerCase
+        indent += 1
+        def oneLine(s: Any) = s.toString.replaceAll("""\n""", "\\\\n").take(127)
+        try {
+          AsyncUtils.trace(s"${indentString}$prefix(${oneLine(args)})")
+          val result = t
+          AsyncUtils.trace(s"${indentString}= ${oneLine(result)}")
+          result
+        } finally {
+          indent -= 1
+        }
+      }
+    }
+
     typingTransform(tree1, owner)((tree, api) => {
       def blockToList(tree: Tree): List[Tree] = tree match {
         case Block(stats, expr) => stats :+ expr
@@ -134,26 +155,6 @@ private[async] trait AnfTransform {
         }
       }
 
-      object trace {
-        private var indent = -1
-
-        private def indentString = "  " * indent
-
-        def apply[T](args: Any)(t: => T): T = {
-          def prefix = mode.toString.toLowerCase
-          indent += 1
-          def oneLine(s: Any) = s.toString.replaceAll("""\n""", "\\\\n").take(127)
-          try {
-            AsyncUtils.trace(s"${indentString}$prefix(${oneLine(args)})")
-            val result = t
-            AsyncUtils.trace(s"${indentString}= ${oneLine(result)}")
-            result
-          } finally {
-            indent -= 1
-          }
-        }
-      }
-
       def defineVal(prefix: String, lhs: Tree, pos: Position): ValDef = {
         val sym = api.currentOwner.newTermSymbol(name.fresh(prefix), pos, SYNTHETIC).setInfo(uncheckedBounds(lhs.tpe))
         internal.valDef(sym, internal.changeOwner(lhs, api.currentOwner, sym)).setType(NoType).setPos(pos)
@@ -219,8 +220,15 @@ private[async] trait AnfTransform {
               funStats ++ argStatss.flatten.flatten :+ typedNewApply
 
             case Block(stats, expr)                                    =>
-              val trees = stats.flatMap(linearize.transformToList).filterNot(isLiteralUnit) ::: linearize.transformToList(expr)
-              eliminateMatchEndLabelParameter(trees)
+              val stats1 = stats.flatMap(linearize.transformToList).filterNot(isLiteralUnit)
+              val exprs1 = linearize.transformToList(expr)
+              val trees = stats1 ::: exprs1
+              val trees1 = eliminateMatchEndLabelParameter(trees)
+              val result = trees1 flatMap {
+                case Block(stats, expr) => stats :+ expr
+                case t => t :: Nil
+              }
+              result
 
             case ValDef(mods, name, tpt, rhs) =>
               if (containsAwait(rhs)) {
@@ -260,7 +268,7 @@ private[async] trait AnfTransform {
               scrutStats :+ treeCopy.Match(tree, scrutExpr, caseDefs)
 
             case LabelDef(name, params, rhs) =>
-              List(LabelDef(name, params, newBlock(linearize.transformToList(rhs), Literal(Constant(())))).setSymbol(tree.symbol))
+              List(treeCopy.LabelDef(tree, name, params, api.typecheck(newBlock(linearize.transformToList(rhs), Literal(Constant(()))))).setSymbol(tree.symbol))
 
             case TypeApply(fun, targs) =>
               val funStats :+ simpleFun = linearize.transformToList(fun)
@@ -274,7 +282,7 @@ private[async] trait AnfTransform {
 
       // Replace the label parameters on `matchEnd` with use of a `matchRes` temporary variable
       //
-      // CaseDefs are translated to labels without parmeters. A terminal label, `matchEnd`, accepts
+      // CaseDefs are translated to labels without parameters. A terminal label, `matchEnd`, accepts
       // a parameter which is the result of the match (this is regular, so even Unit-typed matches have this).
       //
       // For our purposes, it is easier to:
@@ -288,10 +296,22 @@ private[async] trait AnfTransform {
         val matchResults = collection.mutable.Buffer[Tree]()
         val statsExpr0 = statsExpr.reverseMap {
           case ld @ LabelDef(_, param :: Nil, body) =>
-            val matchResult = linearize.defineVar(name.matchRes, param.tpe, ld.pos)
-            matchResults += matchResult
-            caseDefToMatchResult(ld.symbol) = matchResult.symbol
-            val ld2 = treeCopy.LabelDef(ld, ld.name, Nil, body.substituteSymbols(param.symbol :: Nil, matchResult.symbol :: Nil))
+            val symTab = c.universe.asInstanceOf[reflect.internal.SymbolTable]
+            val ld2 = if (param.tpe.typeSymbol == definitions.UnitClass) {
+              // Unit typed match: eliminate the label def parameter, but don't create a matchres temp variable to
+              // store the result for cleaner generated code.
+              caseDefToMatchResult(ld.symbol) = NoSymbol
+              val body2 = substituteTrees(body, param.symbol :: Nil, api.typecheck(literalUnit) :: Nil)
+              treeCopy.LabelDef(ld, ld.name, Nil, body2)
+            } else {
+              // Otherwise, create the matchres var. We'll callers of the label def below.
+              // Remember: we're iterating through the statement sequence in reverse, so we'll get
+              // to the LabelDef and mutate `matchResults` before we'll get to its callers.
+              val matchResult = linearize.defineVar(name.matchRes, param.tpe, ld.pos)
+              matchResults += matchResult
+              caseDefToMatchResult(ld.symbol) = matchResult.symbol
+              treeCopy.LabelDef(ld, ld.name, Nil, body.substituteSymbols(param.symbol :: Nil, matchResult.symbol :: Nil))
+            }
             setInfo(ld.symbol, methodType(Nil, ld.symbol.info.resultType))
             ld2
           case t =>
@@ -299,11 +319,17 @@ private[async] trait AnfTransform {
             else typingTransform(t)((tree, api) =>
               tree match {
                 case Apply(fun, arg :: Nil) if isLabel(fun.symbol) && caseDefToMatchResult.contains(fun.symbol) =>
-                  api.typecheck(atPos(tree.pos)(newBlock(Assign(Ident(caseDefToMatchResult(fun.symbol)), api.recur(arg)) :: Nil, treeCopy.Apply(tree, fun, Nil))))
-                case Block(stats, expr) =>
+                  val temp = caseDefToMatchResult(fun.symbol)
+                  if (temp == NoSymbol)
+                    api.typecheck(atPos(tree.pos)(newBlock(api.recur(arg) :: Nil, treeCopy.Apply(tree, fun, Nil))))
+                  else
+                    api.typecheck(atPos(tree.pos)(newBlock(Assign(Ident(temp), api.recur(arg)) :: Nil, treeCopy.Apply(tree, fun, Nil))))
+                case Block(stats, expr: Apply) if isLabel(expr.symbol) =>
                   api.default(tree) match {
-                    case Block(stats, Block(stats1, expr)) =>
-                      treeCopy.Block(tree, stats ::: stats1, expr)
+                    case Block(stats0, Block(stats1, expr1)) =>
+                      // flatten the block returned by `case Apply` above into the enclosing block for
+                      // cleaner generated code.
+                      treeCopy.Block(tree, stats0 ::: stats1, expr1)
                     case t => t
                   }
                 case _ =>
@@ -312,8 +338,13 @@ private[async] trait AnfTransform {
             )
         }
         matchResults.toList match {
-          case Nil => statsExpr
-          case r1 :: Nil => (r1 +: statsExpr0.reverse) :+ atPos(tree.pos)(gen.mkAttributedIdent(r1.symbol))
+          case _ if caseDefToMatchResult.isEmpty =>
+            statsExpr // return the original trees if nothing changed
+          case Nil =>
+            statsExpr0.reverse // must have been a unit-typed match, no matchRes variable to definne or refer to
+          case r1 :: Nil =>
+            // { var matchRes = _; ....; matchRes }
+            (r1 +: statsExpr0.reverse) :+ atPos(tree.pos)(gen.mkAttributedIdent(r1.symbol))
           case _ => c.error(macroPos, "Internal error: unexpected tree encountered during ANF transform " + statsExpr); statsExpr
         }
       }

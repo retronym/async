@@ -1,13 +1,16 @@
 package scala.async.run.late
 
-import java.io.File
+import java.io.{PrintWriter, FileInputStream, File}
+import java.lang.reflect.InvocationTargetException
 
 import junit.framework.Assert.assertEquals
-import org.junit.Test
+import org.junit.{Assert, Test}
 
 import scala.annotation.StaticAnnotation
+import scala.async.TreeInterrogation
 import scala.async.internal.{AsyncId, AsyncMacro}
 import scala.reflect.internal.util.ScalaClassLoader.URLClassLoader
+import scala.tools.asm.util.{TraceClassVisitor, Textifier}
 import scala.tools.nsc._
 import scala.tools.nsc.plugins.{Plugin, PluginComponent}
 import scala.tools.nsc.reporters.StoreReporter
@@ -75,6 +78,95 @@ class LateExpansion {
     assertEquals("case 3: blerg3", result)
   }
 
+  @Test def polymorphicMethod(): Unit = {
+    val result = run(
+      """
+        |import scala.async.run.late.{autoawait,lateasync}
+        |object Test {
+        |  class C { override def toString = "C" }
+        |  @autoawait def foo[A <: C](a: A): A = a
+        |  @lateasync
+        |  def test1[CC <: C](c: CC): (CC, CC) = {
+        |    val x: (CC, CC) = 0 match { case _ if false => ???; case _ => (foo(c), foo(c)) }
+        |    x
+        |  }
+        |  def test(): (C, C) = test1(new C)
+        |}
+        | """.stripMargin)
+    assertEquals("(C,C)", result.toString)
+  }
+
+  @Test def shadowing(): Unit = {
+    val result = run(
+      """
+        |import scala.async.run.late.{autoawait,lateasync}
+        |object Test {
+        |  trait Foo
+        |  trait Bar extends Foo
+        |  @autoawait def boundary = ""
+        |  @lateasync
+        |  def test: Unit = {
+        |    (new Bar {}: Any) match {
+        |      case foo: Bar =>
+        |        boundary
+        |        0 match {
+        |          case _ => foo; ()
+        |        }
+        |        ()
+        |    }
+        |    ()
+        |  }
+        |}
+        | """.stripMargin)
+  }
+
+  @Test def shadowing0(): Unit = {
+    val result = run(
+      """
+        |import scala.async.run.late.{autoawait,lateasync}
+        |object Test {
+        |  trait Foo
+        |  trait Bar
+        |  def test: Any = test(new C)
+        |  @autoawait def asyncBoundary: String = ""
+        |  @lateasync
+        |  def test(foo: Foo): Foo = foo match {
+        |    case foo: Bar =>
+        |      val foo2: Foo with Bar = new Foo with Bar {}
+        |      asyncBoundary
+        |      null match {
+        |        case _ => foo2
+        |      }
+        |    case other => foo
+        |  }
+        |  class C extends Foo with Bar
+        |}
+        | """.stripMargin)
+  }
+  @Test def shadowing2(): Unit = {
+    val result = run(
+      """
+        |import scala.async.run.late.{autoawait,lateasync}
+        |object Test {
+        |  trait Base; trait Foo[T <: Base] { @autoawait def func: Option[Foo[T]] = None }
+        |  class Sub extends Base
+        |  trait Bar extends Foo[Sub]
+        |  def test: Any = test(new Bar {})
+        |  @lateasync
+        |  def test[T <: Base](foo: Foo[T]): Foo[T] = foo match {
+        |    case foo: Bar =>
+        |      val res = foo.func
+        |      res match {
+        |        case _ =>
+        |      }
+        |      foo
+        |    case other => foo
+        |  }
+        |  test(new Bar {})
+        |}
+        | """.stripMargin)
+  }
+
   def wrapAndRun(code: String): Any = {
     run(
       s"""
@@ -91,7 +183,8 @@ class LateExpansion {
   def run(code: String): Any = {
     val reporter = new StoreReporter
     val settings = new Settings(println(_))
-    settings.outdir.value = sys.props("java.io.tmpdir")
+    // settings.processArgumentString("-Xprint:patmat,postpatmat,jvm -Ybackend:GenASM -nowarn")
+    settings.outdir.value = "/tmp"
     settings.embeddedDefaults(getClass.getClassLoader)
     val isInSBT = !settings.classpath.isSetByUser
     if (isInSBT) settings.usejavacp.value = true
@@ -108,8 +201,10 @@ class LateExpansion {
 
     val run = new Run
     val source = newSourceFile(code)
-    run.compileSources(source :: Nil)
-    assert(!reporter.hasErrors, reporter.infos.mkString("\n"))
+//    TreeInterrogation.withDebug {
+      run.compileSources(source :: Nil)
+//    }
+    Assert.assertTrue(reporter.infos.mkString("\n"), !reporter.hasErrors)
     val loader = new URLClassLoader(Seq(new File(settings.outdir.value).toURI.toURL), global.getClass.getClassLoader)
     val cls = loader.loadClass("Test")
     cls.getMethod("test").invoke(null)
@@ -133,6 +228,8 @@ abstract class LatePlugin extends Plugin {
         super.transform(tree) match {
           case ap@Apply(fun, args) if fun.symbol.hasAnnotation(autoAwaitSym) =>
             localTyper.typed(Apply(TypeApply(gen.mkAttributedRef(asyncIdSym.typeOfThis, awaitSym), TypeTree(ap.tpe) :: Nil), ap :: Nil))
+          case sel@Select(fun, _) if sel.symbol.hasAnnotation(autoAwaitSym) && !(tree.tpe.isInstanceOf[MethodTypeApi] || tree.tpe.isInstanceOf[PolyTypeApi] ) =>
+            localTyper.typed(Apply(TypeApply(gen.mkAttributedRef(asyncIdSym.typeOfThis, awaitSym), TypeTree(sel.tpe) :: Nil), sel :: Nil))
           case dd: DefDef if dd.symbol.hasAnnotation(lateAsyncSym) => atOwner(dd.symbol) {
             val expandee = localTyper.context.withMacrosDisabled(
               localTyper.typed(Apply(TypeApply(gen.mkAttributedRef(asyncIdSym.typeOfThis, asyncSym), TypeTree(dd.rhs.tpe) :: Nil), List(dd.rhs)))

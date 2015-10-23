@@ -190,6 +190,10 @@ private[async] trait TransformUtils {
     val LABEL = 1L << 17 // not in the public reflection API.
     (internal.flags(sym).asInstanceOf[Long] & LABEL) != 0L
   }
+  def isSynth(sym: Symbol): Boolean = {
+    val SYNTHETIC = 1 << 21 // not in the public reflection API.
+    (internal.flags(sym).asInstanceOf[Long] & SYNTHETIC) != 0L
+  }
   def symId(sym: Symbol): Int = {
     val symtab = this.c.universe.asInstanceOf[reflect.internal.SymbolTable]
     sym.asInstanceOf[symtab.Symbol].id
