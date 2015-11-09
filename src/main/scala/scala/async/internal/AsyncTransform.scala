@@ -49,7 +49,7 @@ trait AsyncTransform {
         List(emptyConstructor, stateVar) ++ resultAndAccessors ++ List(execContextValDef) ++ List(applyDefDefDummyBody, apply0DefDef)
       }
 
-      val tryToUnit = appliedType(definitions.FunctionClass(1), futureSystemOps.tryType[Any], typeOf[Unit])
+      val tryToUnit = appliedType(symbolOf[scala.runtime.AbstractFunction1[Any, Any]], futureSystemOps.tryType[Any], typeOf[Unit])
       val template = Template((futureSystemOps.stateMachineClassParents ::: List(tryToUnit, typeOf[() => Unit])).map(TypeTree(_)), emptyValDef, body)
 
       val t = ClassDef(NoMods, name.stateMachineT, Nil, template)
