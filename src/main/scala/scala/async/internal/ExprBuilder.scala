@@ -395,9 +395,10 @@ trait ExprBuilder {
         val stateMemberSymbol = symLookup.stateMachineMember(name.state)
         val stateMemberRef = symLookup.memberRef(name.state)
         val body = Match(stateMemberRef, mkCombinedHandlerCases[T] ++ initStates.flatMap(_.mkOnCompleteHandler[T]) ++ List(CaseDef(Ident(nme.WILDCARD), EmptyTree, Throw(Apply(Select(New(Ident(defn.IllegalStateExceptionClass)), termNames.CONSTRUCTOR), List())))))
+        val body1 = eliminateDeadStates(body)
 
         Try(
-          body,
+          body1,
           List(
             CaseDef(
             Bind(name.t, Typed(Ident(nme.WILDCARD), Ident(defn.ThrowableClass))),
@@ -411,8 +412,51 @@ trait ExprBuilder {
               If(Apply(Ident(defn.NonFatalClass), List(Ident(name.t))), then, Throw(Ident(name.t)))
               then
             })), EmptyTree)
+      }
 
-        //body
+      private def eliminateDeadStates(m: Match): Tree = {
+        object DeadState {
+          private val deadStates = mutable.Map[Int, Int]()
+          // Identify dead states: `case <id> => { state = nextId; (); (); ... }
+          for (CaseDef(Literal(Constant(stateId: Int)), EmptyTree, Block(Assign(_, Literal(Constant(nextState: Int))) :: rest, expr)) <- m.cases) {
+            if ((expr :: rest).forall(t => isLiteralUnit(t)))
+              deadStates(stateId) = nextState
+          }
+          if (deadStates.nonEmpty)
+            AsyncUtils.vprintln(s"${deadStates.size} dead states eliminated")
+          private def deadStateReplacement(i: Int): Int = {
+            deadStates.get(i) match {
+              case Some(next) => deadStateReplacement(next)
+              case None => i
+            }
+          }
+          def unapply(t: Tree): Option[Int] = t match {
+            case Literal(Constant(i: Int)) =>
+              val replacement = deadStateReplacement(i)
+              if (replacement == i) None else Some(replacement)
+            case _ => None
+          }
+        }
+        val stateMemberSymbol = symLookup.stateMachineMember(name.state)
+        // - remove CaseDef-s for dead states
+        // - rewrite state transitions to dead states to instead transition to the
+        //   non-dead successor.
+        object elimDeadStateTransform extends Transformer {
+          override def transform(tree: Tree): Tree = tree match {
+            case m: Match =>
+              val cases1 = m.cases.filter {
+                case CaseDef(DeadState(_), EmptyTree, _) => false
+                case _ => true
+              }
+              super.transform(treeCopy.Match(tree, m.selector, cases1))
+            case Assign(lhs, DeadState(replacement)) if lhs.symbol == stateMemberSymbol =>
+              treeCopy.Assign(tree, lhs, Literal(Constant(replacement)))
+            case _: CaseDef | _: Block | _: If =>
+              super.transform(tree)
+            case _ => tree
+          }
+        }
+        elimDeadStateTransform.transform(m)
       }
 
       def forever(t: Tree): Tree = {
