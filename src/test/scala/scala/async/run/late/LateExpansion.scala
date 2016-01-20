@@ -462,7 +462,7 @@ abstract class LatePlugin extends Plugin {
       }
     }
 
-    override val runsAfter: List[String] = "refchecks" :: Nil
+    override val runsAfter: List[String] = "patmat" :: Nil
     override val phaseName: String = "postpatmat"
 
   })
