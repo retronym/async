@@ -180,4 +180,18 @@ class NakedAwait {
         |""".stripMargin
     }
   }
+
+  @Test
+  def byNameFunctionArgIllegal(): Unit = {
+    expectError("await must not be used under a lazy val initializer") {
+      """
+        | import _root_.scala.async.internal.AsyncId._
+        | def foo(x: String)(a: => String): String = a.reverse
+        | def fooAsByNameLambda = foo("") _
+        | async { fooAsByNameLambda(await("")) }
+        | ()
+        |
+        |""".stripMargin
+    }
+  }
 }
